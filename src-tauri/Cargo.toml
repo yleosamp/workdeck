@@ -1,6 +1,6 @@
 [package]
 name = "workdeck"
-version = "0.7.0"
+version = "0.7.1"
 description = "Professional software activity and social presence"
 authors = ["Workdeck"]
 edition = "2021"

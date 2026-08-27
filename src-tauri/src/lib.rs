@@ -399,17 +399,22 @@ async fn show_friend_notification(app: AppHandle, friend_id: String, display_nam
     let monitor = app.get_webview_window("main")
         .and_then(|window| window.current_monitor().ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
-    let notice = WebviewWindowBuilder::new(&app, label, WebviewUrl::App(url.into()))
+    let notice_builder = WebviewWindowBuilder::new(&app, label, WebviewUrl::App(url.into()))
         .title("Atividade de amigo")
         .inner_size(340.0, 88.0)
         .decorations(false)
-        .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
         .focused(false)
         .focusable(true)
-        .shadow(true)
+        .shadow(true);
+    // Tauri only exposes transparent webviews on macOS when its private-API
+    // feature is enabled. Keep the Steam-like transparency on Windows/Linux
+    // and use the notification page's opaque background on macOS.
+    #[cfg(not(target_os = "macos"))]
+    let notice_builder = notice_builder.transparent(true);
+    let notice = notice_builder
         .build()
         .map_err(|error| error.to_string())?;
     if let Some(monitor) = monitor {
