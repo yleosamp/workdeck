@@ -1,0 +1,49 @@
+{
+  "name": "workdeck",
+  "private": true,
+  "version": "0.7.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "tsx watch server/src/index.ts",
+    "start:api": "tsx server/src/index.ts",
+    "start:api:prod": "node dist-server/index.js",
+    "build:api": "tsc -p server/tsconfig.json",
+    "test:api": "vitest run server",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
+    "tauri:build:macos": "tauri build --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.macos.adhoc.conf.json"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@fastify/jwt": "^10.0.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/websocket": "^11.0.0",
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "argon2": "^0.44.0",
+    "dotenv": "^17.0.0",
+    "fastify": "^5.6.0",
+    "lucide-react": "^1.34.0",
+    "mysql2": "^3.15.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.0",
+    "@vitejs/plugin-react": "^6.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.7.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}

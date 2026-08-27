@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-server
+target
+.vite
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.tsbuildinfo
+.workdeck-api.pid
+releases/*
+!releases/latest.example.json

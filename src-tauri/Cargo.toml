@@ -1,0 +1,24 @@
+[package]
+name = "workdeck"
+version = "0.7.0"
+description = "Professional software activity and social presence"
+authors = ["Workdeck"]
+edition = "2021"
+
+[lib]
+name = "workdeck_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sysinfo = "0.33"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-updater = "2"

@@ -1,0 +1,19 @@
+{
+  "version": "0.7.0",
+  "notes": "Atualização automática do Workdeck.",
+  "pub_date": "2026-08-26T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "file": "Workdeck_0.7.0_x64-setup.exe",
+      "signature": "CONTEUDO_DO_ARQUIVO_SIG"
+    },
+    "darwin-x86_64": {
+      "file": "Workdeck_x64.app.tar.gz",
+      "signature": "CONTEUDO_DO_ARQUIVO_SIG"
+    },
+    "darwin-aarch64": {
+      "file": "Workdeck_aarch64.app.tar.gz",
+      "signature": "CONTEUDO_DO_ARQUIVO_SIG"
+    }
+  }
+}
