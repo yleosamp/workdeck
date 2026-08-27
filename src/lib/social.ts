@@ -85,6 +85,16 @@ const refreshKey = "workdeck.refresh-token";
 const apiKey = "workdeck.api-url";
 const productionMigrationKey = "workdeck.production-api-v1";
 const productionApiUrl = "http://144.22.135.127:8787";
+const isDevelopmentClient = window.location.hostname === "localhost" && window.location.port === "1420";
+
+function isLoopbackApi(url: string) {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
 
 class SocialClient {
   private socket?: WebSocket;
@@ -95,9 +105,14 @@ class SocialClient {
 
   get apiUrl() {
     let remembered = localStorage.getItem(apiKey);
-    if (!localStorage.getItem(productionMigrationKey)) {
+    // Packaged builds must never silently fall back to a developer's local API.
+    // Keep localhost available only when running the Vite development server.
+    if (!isDevelopmentClient && (!remembered || isLoopbackApi(remembered))) {
+      remembered = productionApiUrl;
+      localStorage.setItem(apiKey, remembered);
+    } else if (!localStorage.getItem(productionMigrationKey)) {
       localStorage.setItem(productionMigrationKey, "done");
-      if (!remembered || remembered === "http://127.0.0.1:8787") {
+      if (!remembered) {
         remembered = productionApiUrl;
         localStorage.setItem(apiKey, remembered);
       }
@@ -106,7 +121,8 @@ class SocialClient {
   }
 
   setApiUrl(url: string) {
-    localStorage.setItem(apiKey, url.replace(/\/$/, ""));
+    const normalized = url.trim().replace(/\/$/, "");
+    localStorage.setItem(apiKey, !isDevelopmentClient && isLoopbackApi(normalized) ? productionApiUrl : normalized);
   }
 
   hasSession() { return Boolean(this.sessionValue(refreshKey)); }
