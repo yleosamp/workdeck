@@ -10,6 +10,7 @@ import { RealtimeHub } from "./realtime.js";
 import { activityRoutes } from "./routes/activity.js";
 import { authRoutes } from "./routes/auth.js";
 import { chatRoutes } from "./routes/chat.js";
+import { communityRoutes } from "./routes/communities.js";
 import { friendRoutes } from "./routes/friends.js";
 import { realtimeRoutes } from "./routes/realtime.js";
 import { updateRoutes } from "./routes/updates.js";
@@ -52,6 +53,7 @@ export async function buildServer() {
   await app.register(friendRoutes);
   await app.register(activityRoutes);
   await app.register(chatRoutes);
+  await app.register(communityRoutes);
   await app.register(realtimeRoutes);
 
   app.setErrorHandler((error, _request, reply) => {

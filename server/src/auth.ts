@@ -72,3 +72,17 @@ export async function isBlocked(app: FastifyInstance, first: string, second: str
   );
   return rows.length > 0;
 }
+
+export async function shareCommunity(app: FastifyInstance, first: string, second: string) {
+  const [rows] = await app.db.execute<RowDataPacket[]>(
+    `SELECT 1 FROM community_members mine JOIN community_members other ON other.community_id=mine.community_id
+     WHERE mine.user_id=? AND other.user_id=? LIMIT 1`,
+    [first, second]
+  );
+  return rows.length > 0;
+}
+
+export async function canDirectMessage(app: FastifyInstance, first: string, second: string) {
+  if (await isBlocked(app, first, second)) return false;
+  return await areFriends(app, first, second) || await shareCommunity(app, first, second);
+}

@@ -27,6 +27,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Radio,
   Search,
   Send,
   Settings,
@@ -43,13 +44,15 @@ import { AuthView } from "./components/AuthView";
 import { FriendManager } from "./components/FriendManager";
 import { Heatmap } from "./components/Heatmap";
 import { SoftwareIcon } from "./components/SoftwareIcon";
+import { StreamPopoutWindow, StudiosView } from "./components/StudiosView";
 import { mockApps, mockHeatmap } from "./data/mockData";
 import { addTrackedApp, getActivitySnapshot } from "./lib/activity";
 import { formatDuration, formatFileSize, percentChange } from "./lib/format";
 import { PeerFileTransport, previewKindForFile, runP2PSelfTest, type SignalPayload } from "./lib/p2p";
 import { notifySoftwareStarted } from "./lib/notifications";
 import { openSavedFile, revealSavedFile, saveReceivedFile } from "./lib/save-file";
-import { social, type ApiFriend, type ApiFriendRequest, type ApiLeaderboard, type ApiMessage, type ApiProfile, type LeaderboardPeriod, type SocialUser } from "./lib/social";
+import { defaultAudioProcessing, defaultStreamSettings, type AudioProcessingSettings, type StreamQuality, type StreamSettings } from "./lib/voice";
+import { social, type ApiFriend, type ApiFriendRequest, type ApiLeaderboard, type ApiMessage, type ApiProfile, type CommunityMember, type LeaderboardPeriod, type SocialUser } from "./lib/social";
 import type { AppActivityDay, Friend, HeatmapDay, Message, TrackedApp, View } from "./types";
 
 const navItems: { id: View; label: string; icon: typeof Home }[] = [
@@ -57,6 +60,7 @@ const navItems: { id: View; label: string; icon: typeof Home }[] = [
   { id: "library", label: "Software", icon: Library },
   { id: "activity", label: "Activity", icon: Activity },
   { id: "leaderboard", label: "Leaderboard", icon: Trophy },
+  { id: "studios", label: "Studios", icon: Radio },
   { id: "chat", label: "Messages", icon: MessageCircle }
 ];
 
@@ -343,7 +347,8 @@ function mapFriend(friend: ApiFriend): Friend {
     currentApp: friend.currentAppName ?? undefined,
     currentAppColor: friend.currentAppName ? "#72e3a2" : undefined,
     currentActivity: friend.currentAppName ? "Working now" : undefined,
-    lastSeen: friend.lastSeenAt ? `Last seen ${new Date(friend.lastSeenAt).toLocaleString()}` : "Offline"
+    lastSeen: friend.lastSeenAt ? `Last seen ${new Date(friend.lastSeenAt).toLocaleString()}` : "Offline",
+    isFriend: true
   };
 }
 
@@ -391,7 +396,7 @@ function FileCard({ file, onAccept, onSave, onOpenImage, onOpenSaved, onRevealSa
   );
 }
 
-function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, onOpenProfile }: { friends: Friend[]; currentUserId: string; initialFriendId?: string; onFriendsChanged: () => Promise<void>; onOpenProfile: (friend: Friend) => void }) {
+function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, onInitialAttachmentConsumed, onFriendsChanged, onOpenProfile }: { friends: Friend[]; currentUserId: string; initialFriendId?: string; initialAttachment?: File | null; onInitialAttachmentConsumed?: () => void; onFriendsChanged: () => Promise<void>; onOpenProfile: (friend: Friend) => void }) {
   const [selectedId, setSelectedId] = useState(initialFriendId ?? friends[0]?.id ?? "");
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [draft, setDraft] = useState("");
@@ -418,6 +423,9 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
   useEffect(() => {
     if (!friends.some((item) => item.id === selectedId)) setSelectedId(friends[0]?.id ?? "");
   }, [friends, selectedId]);
+  useEffect(() => {
+    if (initialFriendId && friends.some((item) => item.id === initialFriendId)) setSelectedId(initialFriendId);
+  }, [initialFriendId, friends]);
 
   useEffect(() => () => {
     for (const url of previewUrls.current) URL.revokeObjectURL(url);
@@ -481,7 +489,8 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
       if (pending && pending.targetUserId === event.userId) {
         void (async () => {
           try {
-            const transport = new PeerFileTransport((signal) => social.sendRealtime({ type: "webrtc.signal", targetUserId: pending.targetUserId, transferId: event.transferId, signal }));
+            const { iceServers } = await social.rtcConfig().catch(() => ({ iceServers: undefined }));
+            const transport = new PeerFileTransport((signal) => social.sendRealtime({ type: "webrtc.signal", targetUserId: pending.targetUserId, transferId: event.transferId, signal }), { iceServers });
             transports.current.set(event.transferId, transport);
             await transport.createOffer();
             updateFile(pending.messageId, { state: "transferring", progress: 1 }, pending.targetUserId);
@@ -538,6 +547,12 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
     setPendingAttachment(file);
   };
 
+  useEffect(() => {
+    if (!initialAttachment) return;
+    queueAttachment(initialAttachment);
+    onInitialAttachmentConsumed?.();
+  }, [initialAttachment]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const confirmAttachment = async () => {
     if (!pendingAttachment || sendingAttachment) return;
     const file = pendingAttachment;
@@ -578,6 +593,7 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
     if (!message.file || !friend) return;
     const transferId = message.file.transferId;
     if (!transferId) return;
+    const { iceServers } = await social.rtcConfig().catch(() => ({ iceServers: undefined }));
     const transport = new PeerFileTransport(
       (signal) => social.sendRealtime({ type: "webrtc.signal", targetUserId: friend.id, transferId, signal }),
       {
@@ -594,7 +610,8 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
             updateFile(message.id, { state: "failed", progress: 0 });
             setError(reason instanceof Error ? reason.message : "Não foi possível salvar o arquivo");
           } finally { transport.close(); }
-        }
+        },
+        iceServers
       }
     );
     transports.current.set(transferId, transport);
@@ -652,11 +669,11 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
       <section className="chat-panel">
         <header className="chat-header">
           <div className="chat-person"><Avatar friend={friend} /><div><strong>{friend.name}</strong><span>{friend.status === "online" ? "Online" : friend.status}</span></div></div>
-          <div className="chat-actions"><button className="secondary-button" onClick={() => onOpenProfile(friend)}><UserPlus size={15} /> Profile</button><button className="icon-button" onClick={() => setShowActions(!showActions)}><MoreHorizontal size={19} /></button>{showActions && <div className="chat-action-menu"><button onClick={() => void removeFriend()}>Remove friend</button><button className="danger" onClick={() => void blockFriend()}>Block user</button></div>}</div>
+          <div className="chat-actions"><button className="secondary-button" onClick={() => onOpenProfile(friend)}><UserPlus size={15} /> Profile</button><button className="icon-button" onClick={() => setShowActions(!showActions)}><MoreHorizontal size={19} /></button>{showActions && <div className="chat-action-menu">{friend.isFriend !== false && <button onClick={() => void removeFriend()}>Remove friend</button>}<button className="danger" onClick={() => void blockFriend()}>Block user</button></div>}</div>
         </header>
         {friend.currentApp && <div className="friend-activity"><span className="app-mini-dot" style={{ background: friend.currentAppColor }} /><div><span>Currently working in</span><strong>{friend.currentApp}</strong></div><span>{friend.currentActivity}</span></div>}
         <div className="messages">
-          <div className="conversation-start"><Avatar friend={friend} size="lg" /><h3>{friend.name}</h3><span>{friend.handle} · Workdeck friend</span></div>
+          <div className="conversation-start"><Avatar friend={friend} size="lg" /><h3>{friend.name}</h3><span>{friend.handle} · {friend.isFriend === false ? "Membro de Studio" : "Workdeck friend"}</span></div>
           {thread.map((message) => (
             <div className={`message ${message.authorId === currentUserId ? "message-mine" : ""}`} key={message.id}>
               {message.authorId !== currentUserId && <Avatar friend={friend} size="sm" />}
@@ -809,11 +826,19 @@ function SettingsView({ user, testFriend, onUserChanged, onLogout, onSwitchAccou
   const [apiUrl, setApiUrl] = useState(social.apiUrl);
   const [blockedUsers, setBlockedUsers] = useState<Array<SocialUser & { blockedAt: string }>>([]);
   const [p2pTest, setP2pTest] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [audioProcessing, setAudioProcessing] = useState<AudioProcessingSettings>(() => { try { return { ...defaultAudioProcessing, ...JSON.parse(localStorage.getItem("workdeck.audio-processing") ?? "{}") }; } catch { return defaultAudioProcessing; } });
+  const [streamDefaults, setStreamDefaults] = useState<StreamSettings>(() => { try { return { ...defaultStreamSettings, ...JSON.parse(localStorage.getItem("workdeck.stream-settings") ?? "{}") }; } catch { return defaultStreamSettings; } });
   useEffect(() => { void social.blockedUsers().then(setBlockedUsers).catch(() => undefined); }, []);
   const updatePrivacy = async (key: "profileVisibility" | "presenceVisibility", enabled: boolean) => {
     const changed = await social.updateMe({ [key]: enabled ? (key === "profileVisibility" ? "public" : "friends") : "private" });
     onUserChanged(changed);
   };
+  const updateAudio = (key: keyof AudioProcessingSettings, value: boolean) => {
+    const next = { ...audioProcessing, [key]: value };
+    setAudioProcessing(next);
+    localStorage.setItem("workdeck.audio-processing", JSON.stringify(next));
+  };
+  const updateStream = (next: StreamSettings) => { setStreamDefaults(next); localStorage.setItem("workdeck.stream-settings", JSON.stringify(next)); };
   return (
     <div className="page settings-page">
       <div className="page-heading"><div><span className="eyebrow">Your preferences</span><h1>Settings</h1><p>Control tracking, privacy, and notifications.</p></div></div>
@@ -823,6 +848,14 @@ function SettingsView({ user, testFriend, onUserChanged, onLogout, onSwitchAccou
         <div className="setting-row"><div><strong>Live software presence</strong><p>Choose who can see which tracked software is currently open.</p></div><select value={presenceVisibility} onChange={async (event) => { const value = event.target.value as SocialUser["presenceVisibility"]; setPresenceVisibility(value); onUserChanged(await social.updateMe({ presenceVisibility: value })); }}><option value="public">Everyone with my link</option><option value="friends">Friends only</option><option value="private">Nobody</option></select></div>
         <SettingRow title="Friend activity notifications" description="Show a Steam-style card in the corner when a friend opens software." value={notifications} onChange={(value) => { setNotifications(value); localStorage.setItem("workdeck.notifications", String(value)); }} />
         <button className="secondary-button notification-test" onClick={() => void notifySoftwareStarted(testFriend?.id ?? "", testFriend?.name ?? user.displayName, "Premiere Pro")}><BellRing size={16} /> Testar aviso estilo Steam</button>
+      </section>
+      <section className="panel settings-panel">
+        <SectionTitle title="Voz & transmissão" />
+        <SettingRow title="Cancelamento de eco" description="Evita que a voz dos participantes volte pelo seu microfone." value={audioProcessing.echoCancellation} onChange={(value) => updateAudio("echoCancellation", value)} />
+        <SettingRow title="Supressão de ruído" description="Reduz sons constantes como ventilador, teclado e ambiente." value={audioProcessing.noiseSuppression} onChange={(value) => updateAudio("noiseSuppression", value)} />
+        <SettingRow title="Ganho automático" description="Equilibra automaticamente o volume da sua voz." value={audioProcessing.autoGainControl} onChange={(value) => updateAudio("autoGainControl", value)} />
+        <div className="settings-stream-defaults"><label>Qualidade padrão<select value={streamDefaults.quality} onChange={(event) => updateStream({ ...streamDefaults, quality: event.target.value as StreamQuality })}><option value="720p">720p</option><option value="1080p">1080p</option><option value="1440p">1440p</option><option value="source">SOURCE</option></select></label><label>FPS<select value={streamDefaults.fps} onChange={(event) => updateStream({ ...streamDefaults, fps: Number(event.target.value) as 15 | 30 | 60 })}><option value="15">15 FPS</option><option value="30">30 FPS</option><option value="60">60 FPS</option></select></label><label>Bitrate<select value={streamDefaults.bitrateMbps} onChange={(event) => updateStream({ ...streamDefaults, bitrateMbps: Number(event.target.value) as 2 | 4 | 6 | 8 | 10 })}><option value="2">2 Mbps</option><option value="4">4 Mbps</option><option value="6">6 Mbps</option><option value="8">8 Mbps</option><option value="10">10 Mbps</option></select></label></div>
+        <span className="settings-success">As mudanças do microfone entram em vigor na próxima entrada em uma call.</span>
       </section>
       <section className="panel settings-panel">
         <SectionTitle title="Server & data" />
@@ -890,10 +923,14 @@ function WorkdeckApp() {
   const [toast, setToast] = useState("");
   const [viewedProfile, setViewedProfile] = useState<ApiProfile | null>(null);
   const [selectedFriendId, setSelectedFriendId] = useState("");
+  const [pendingChatAttachment, setPendingChatAttachment] = useState<File | null>(null);
+  const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
+  const [studioChatContacts, setStudioChatContacts] = useState<Friend[]>([]);
   const previousRunning = useRef<string[]>([]);
   const activitySyncFailed = useRef(false);
   const apiFriendsRef = useRef<ApiFriend[]>([]);
   const friends = useMemo(() => apiFriends.map((friend) => ({ ...mapFriend(friend), mutualFriends: friend.unreadCount })), [apiFriends]);
+  const chatFriends = useMemo(() => [...friends, ...studioChatContacts.filter((contact) => !friends.some((friend) => friend.id === contact.id))], [friends, studioChatContacts]);
   const unreadCount = apiFriends.reduce((sum, friend) => sum + friend.unreadCount, 0);
   const initials = currentUser?.displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() ?? "WD";
 
@@ -916,6 +953,24 @@ function WorkdeckApp() {
       if (cancelled) dispose(); else unlisten = dispose;
     });
     return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("@tauri-apps/plugin-deep-link").then(async ({ getCurrent, onOpenUrl }) => {
+      const receive = (urls: string[]) => {
+        const invite = urls.map((raw) => raw.match(/^workdeck:\/\/invite\/([^/?#]+)/i)?.[1]).find(Boolean);
+        if (!invite) return;
+        setPendingInviteCode(decodeURIComponent(invite));
+        setView("studios");
+      };
+      receive(await getCurrent() ?? []);
+      const unlisten = await onOpenUrl(receive);
+      if (cancelled) unlisten(); else dispose = unlisten;
+    }).catch(() => undefined);
+    return () => { cancelled = true; dispose?.(); };
   }, []);
 
   useEffect(() => {
@@ -970,6 +1025,7 @@ function WorkdeckApp() {
         setToast(`${event.request.user.displayName} sent you a friend request`);
       }
       if (event.type === "friend.accepted" || event.type === "friend.removed") void refreshSocial();
+      if (event.type === "community.invited") setToast(`${event.invite.creatorName} convidou você para ${event.invite.communityName}`);
       if (event.type === "message.created" && event.message.senderId !== currentUser?.id) {
         setApiFriends((current) => current.map((friend) => friend.id === event.message.senderId ? { ...friend, unreadCount: friend.unreadCount + 1 } : friend));
       }
@@ -1018,6 +1074,27 @@ function WorkdeckApp() {
   }, [toast]);
 
   const setCurrentView = (next: View) => { setView(next); setMobileNav(false); };
+  const openDirectMessage = (userId: string, file?: File, member?: CommunityMember) => {
+    if (member && !friends.some((friend) => friend.id === member.id)) {
+      setStudioChatContacts((current) => [...current.filter((contact) => contact.id !== member.id), {
+        id: member.id,
+        name: member.displayName,
+        handle: `@${member.handle}`,
+        avatar: member.displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(),
+        avatarColor: member.avatarColor,
+        avatarUrl: member.avatarUrl,
+        status: member.status,
+        currentApp: member.currentAppName ?? undefined,
+        currentAppColor: member.currentAppName ? "#72e3a2" : undefined,
+        currentActivity: member.currentAppName ? "Working now" : undefined,
+        lastSeen: member.status === "offline" ? "Offline" : member.status,
+        isFriend: false
+      }]);
+    }
+    setSelectedFriendId(userId);
+    setPendingChatAttachment(file ?? null);
+    setCurrentView("chat");
+  };
   const openFriendProfile = async (friend: Friend) => {
     setSelectedFriendId(friend.id);
     try {
@@ -1094,19 +1171,20 @@ function WorkdeckApp() {
           {showNotifications && <div className="notification-popover"><div><strong>Notifications</strong><button onClick={() => setShowNotifications(false)}><X size={15} /></button></div>{friendRequests.incoming.map((request) => <article key={request.id} onClick={() => setShowFriendManager(true)}><span className="notice-icon"><UserPlus size={16} /></span><p><strong>{request.user.displayName} wants to be friends</strong><span>@{request.user.handle}</span></p></article>)}{!friendRequests.incoming.length && <div className="empty-notifications">You're all caught up.</div>}</div>}
         </header>
 
-        <main className={view === "chat" ? "main-chat" : ""}>
+        <main className={view === "chat" || view === "studios" ? "main-chat" : ""}>
           {view === "home" && <HomeView apps={apps} heatmap={heatmap} friends={friends} userName={currentUser.displayName} onViewChange={setCurrentView} />}
           {view === "library" && <LibraryView apps={apps} onAdd={() => setShowAdd(true)} />}
           {view === "activity" && <ActivityView apps={apps} heatmap={heatmap} appDaily={appDaily} onExport={exportActivity} />}
           {view === "leaderboard" && <LeaderboardView onOpenChat={(userId) => { setSelectedFriendId(userId); setCurrentView("chat"); }} />}
-          {view === "chat" && <ChatView friends={friends} currentUserId={currentUser.id} initialFriendId={selectedFriendId} onFriendsChanged={refreshSocial} onOpenProfile={(friend) => void openFriendProfile(friend)} />}
+          {view === "studios" && <StudiosView currentUser={currentUser} friends={apiFriends} pendingInviteCode={pendingInviteCode} onInviteHandled={() => setPendingInviteCode(null)} onOpenDm={openDirectMessage} onToast={setToast} />}
+          {view === "chat" && <ChatView friends={chatFriends} currentUserId={currentUser.id} initialFriendId={selectedFriendId} initialAttachment={pendingChatAttachment} onInitialAttachmentConsumed={() => setPendingChatAttachment(null)} onFriendsChanged={refreshSocial} onOpenProfile={(friend) => void openFriendProfile(friend)} />}
           {view === "friend-profile" && viewedProfile && <FriendProfileView data={viewedProfile} onBack={() => setCurrentView("chat")} />}
           {view === "profile" && <ProfileView apps={apps} heatmap={heatmap} user={currentUser} friendCount={friends.length} onCopy={copyProfile} onUserChanged={setCurrentUser} />}
           {view === "settings" && <SettingsView user={currentUser} testFriend={friends[0]} onUserChanged={setCurrentUser} onLogout={() => void logout()} onSwitchAccount={switchAccount} onExport={exportActivity} />}
         </main>
       </div>
 
-      {friendPanel && view !== "chat" && (
+      {friendPanel && view !== "chat" && view !== "studios" && (
         <aside className="friends-panel">
           <div className="friends-heading"><div><h3>Friends</h3><span>{friends.filter((friend) => friend.status !== "offline").length} online</span></div><button className="icon-button" onClick={() => setShowFriendManager(true)}><UserPlus size={17} /></button></div>
           <label className="inline-search"><Search size={14} /><input placeholder="Find friends" /></label>
@@ -1268,5 +1346,8 @@ function DesktopUpdater() {
 }
 
 export default function App() {
-  return new URLSearchParams(window.location.search).has("friendActivity") ? <SteamActivityWindow /> : <><WorkdeckApp /><DesktopUpdater /></>;
+  const query = new URLSearchParams(window.location.search);
+  if (query.has("friendActivity")) return <SteamActivityWindow />;
+  if (query.has("streamPopout")) return <StreamPopoutWindow />;
+  return <><WorkdeckApp /><DesktopUpdater /></>;
 }

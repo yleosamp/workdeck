@@ -1,4 +1,4 @@
-export type View = "home" | "library" | "activity" | "leaderboard" | "chat" | "friend-profile" | "profile" | "settings";
+export type View = "home" | "library" | "activity" | "leaderboard" | "studios" | "chat" | "friend-profile" | "profile" | "settings";
 
 export type AppStatus = "running" | "idle";
 
@@ -38,6 +38,7 @@ export interface Friend {
   currentActivity?: string;
   lastSeen?: string;
   mutualFriends?: number;
+  isFriend?: boolean;
 }
 
 export interface Message {

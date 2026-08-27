@@ -101,6 +101,60 @@ const migrations = [
     last_opened_at DATETIME(3) NULL,
     PRIMARY KEY (user_id, app_id),
     CONSTRAINT fk_activity_totals_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS communities (
+    id CHAR(36) PRIMARY KEY,
+    owner_id CHAR(36) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    description VARCHAR(240) NOT NULL DEFAULT '',
+    icon_color CHAR(7) NOT NULL DEFAULT '#72e3a2',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT fk_communities_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS community_members (
+    community_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    role ENUM('owner','member') NOT NULL DEFAULT 'member',
+    joined_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (community_id,user_id),
+    CONSTRAINT fk_community_members_community FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
+    CONSTRAINT fk_community_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_community_members_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS community_channels (
+    id CHAR(36) PRIMARY KEY,
+    community_id CHAR(36) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    kind ENUM('text','voice') NOT NULL,
+    position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT fk_community_channels_community FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
+    INDEX idx_community_channels_order (community_id,kind,position)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS community_messages (
+    id CHAR(36) PRIMARY KEY,
+    channel_id CHAR(36) NOT NULL,
+    sender_id CHAR(36) NOT NULL,
+    body TEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT fk_community_messages_channel FOREIGN KEY (channel_id) REFERENCES community_channels(id) ON DELETE CASCADE,
+    CONSTRAINT fk_community_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_community_messages_channel (channel_id,created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS community_invites (
+    id CHAR(36) PRIMARY KEY,
+    community_id CHAR(36) NOT NULL,
+    code VARCHAR(40) NOT NULL UNIQUE,
+    created_by CHAR(36) NOT NULL,
+    target_user_id CHAR(36) NULL,
+    expires_at DATETIME(3) NULL,
+    max_uses INT UNSIGNED NULL,
+    uses INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT fk_community_invites_community FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
+    CONSTRAINT fk_community_invites_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_community_invites_target FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_community_invites_target (target_user_id,created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 ];
 

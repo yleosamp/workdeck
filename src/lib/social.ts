@@ -65,6 +65,72 @@ export type ApiLeaderboard = {
   }>;
 };
 
+export type CommunityChannel = {
+  id: string;
+  communityId: string;
+  name: string;
+  kind: "text" | "voice";
+  position: number;
+  createdAt: string;
+};
+
+export type VoiceParticipant = SocialUser & {
+  userId: string;
+  channelId: string;
+  muted: boolean;
+  cameraEnabled: boolean;
+  screenSharing: boolean;
+  joinedAt: string;
+  status: "online" | "away" | "offline";
+  currentAppId: string | null;
+  currentAppName: string | null;
+};
+
+export type CommunityMember = SocialUser & {
+  role: "owner" | "member";
+  joinedAt: string;
+  status: "online" | "away" | "offline";
+  currentAppId: string | null;
+  currentAppName: string | null;
+  sessionStartedAt: string | null;
+  voice: Omit<VoiceParticipant, keyof SocialUser | "status" | "currentAppId" | "currentAppName"> | null;
+};
+
+export type ApiCommunity = {
+  id: string;
+  ownerId: string;
+  name: string;
+  description: string;
+  iconColor: string;
+  role: "owner" | "member";
+  createdAt: string;
+  channels: CommunityChannel[];
+  members: CommunityMember[];
+};
+
+export type CommunityInvite = {
+  id: string;
+  code: string;
+  communityId: string;
+  communityName: string;
+  description: string;
+  iconColor: string;
+  creatorName: string;
+  memberCount: number;
+  targetUserId: string | null;
+  createdAt: string;
+  valid: boolean;
+};
+
+export type CommunityMessage = {
+  id: string;
+  channelId: string;
+  senderId: string;
+  body: string;
+  createdAt: string;
+  author: SocialUser;
+};
+
 export type RealtimeEvent =
   | { type: "realtime.ready"; userId: string }
   | { type: "presence.updated"; userId: string; presence: { status: "online" | "away" | "offline"; currentAppId: string | null; currentAppName: string | null; sessionStartedAt: string | null; updatedAt: string } }
@@ -76,6 +142,14 @@ export type RealtimeEvent =
   | { type: "chat.typing"; userId: string; isTyping: boolean }
   | { type: "webrtc.ready"; userId: string; transferId: string }
   | { type: "webrtc.signal"; userId: string; transferId: string; signal: unknown }
+  | { type: "community.updated"; communityId: string }
+  | { type: "community.invited"; invite: CommunityInvite }
+  | { type: "community.message"; communityId: string; message: CommunityMessage }
+  | { type: "voice.snapshot"; channelId: string; participants: VoiceParticipant[] }
+  | { type: "voice.participant"; action: "joined" | "updated"; participant: VoiceParticipant }
+  | { type: "voice.participant"; action: "left"; participant: { userId: string; channelId: string } }
+  | { type: "voice.signal"; channelId: string; userId: string; signal: unknown }
+  | { type: "voice.media"; channelId: string; userId: string; streamId: string; mediaKind: "microphone" | "camera" | "screen"; active: boolean }
   | { type: "realtime.error"; error: string };
 
 type SessionResponse = { accessToken: string; refreshToken: string; expiresIn: number; user: SocialUser };
@@ -181,6 +255,27 @@ class SocialClient {
     return (await this.request<{ message: ApiMessage }>(`/chat/${userId}/messages`, { method: "POST", body: JSON.stringify(input) })).message;
   }
   async markRead(messageId: string) { return this.request(`/chat/messages/${messageId}/read`, { method: "POST" }); }
+  async communities() { return (await this.request<{ communities: ApiCommunity[] }>("/communities")).communities; }
+  async createCommunity(input: { name: string; description?: string; iconColor?: string }) {
+    return (await this.request<{ community: ApiCommunity }>("/communities", { method: "POST", body: JSON.stringify(input) })).community;
+  }
+  async createCommunityChannel(communityId: string, input: { name: string; kind: "text" | "voice" }) {
+    return (await this.request<{ channel: CommunityChannel }>(`/communities/${communityId}/channels`, { method: "POST", body: JSON.stringify(input) })).channel;
+  }
+  async createCommunityInvite(communityId: string) {
+    return this.request<{ code: string; url: string }>(`/communities/${communityId}/invites`, { method: "POST", body: JSON.stringify({ expiresInHours: 168, maxUses: null }) });
+  }
+  async inviteFriendToCommunity(communityId: string, userId: string) {
+    return this.request<{ invite: CommunityInvite; url: string }>(`/communities/${communityId}/invite-friend`, { method: "POST", body: JSON.stringify({ userId }) });
+  }
+  async communityInvites() { return (await this.request<{ invites: CommunityInvite[] }>("/community-invites")).invites; }
+  async communityInvite(code: string) { return this.request<{ invite: CommunityInvite; alreadyMember: boolean }>(`/community-invites/${encodeURIComponent(code)}`); }
+  async acceptCommunityInvite(code: string) { return this.request<{ accepted: boolean; communityId: string }>(`/community-invites/${encodeURIComponent(code)}/accept`, { method: "POST" }); }
+  async communityMessages(channelId: string) { return (await this.request<{ messages: CommunityMessage[] }>(`/community-channels/${channelId}/messages`)).messages; }
+  async sendCommunityMessage(channelId: string, body: string) {
+    return (await this.request<{ message: CommunityMessage }>(`/community-channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ body }) })).message;
+  }
+  async rtcConfig() { return this.request<{ iceServers: RTCIceServer[]; expiresIn: number }>("/rtc/config"); }
   async syncActivity(snapshot: ActivitySnapshot) {
     return this.request("/activity/sync", { method: "POST", body: JSON.stringify({
       apps: snapshot.apps.map((app) => {

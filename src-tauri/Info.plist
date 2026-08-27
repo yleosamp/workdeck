@@ -3,6 +3,10 @@
 <plist version="1.0">
 <dict>
   <key>NSCameraUsageDescription</key>
-  <string>O Workdeck usa a câmera somente quando você escolhe tirar uma foto para enviar diretamente a um amigo.</string>
+  <string>O Workdeck usa a câmera somente quando você liga o vídeo em uma call ou tira uma foto para enviar a um amigo.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>O Workdeck usa o microfone quando você entra em uma call de um Studio.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>O Workdeck captura o áudio do sistema somente quando você escolhe compartilhá-lo junto com sua tela.</string>
 </dict>
 </plist>

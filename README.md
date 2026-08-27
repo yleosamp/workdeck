@@ -21,6 +21,10 @@ O Workdeck é uma “Steam para softwares profissionais”: acompanha o tempo ga
 - Descrição, foto de perfil e banner personalizados
 - Aviso próprio e clicável no canto da tela, no estilo Steam, que abre o chat do amigo
 - Ícone na bandeja do Windows e na barra de menus do macOS; fechar/minimizar mantém o rastreador em segundo plano
+- **Studios**: comunidades com convite por link ou por amigo, canais de texto e voz, lista de membros e presença atual
+- Chamadas P2P com microfone, câmera 1080p/30 e compartilhamento de tela com áudio, qualidade até SOURCE, 15/30/60 FPS e bitrate até 10 Mbps
+- Ping da chamada, controles de mutar/câmera/tela, chat próprio da call, preview do perfil e envio rápido de arquivo
+- Tela compartilhada destacável em janela independente com opção de ficar sempre no topo
 - Atualizador assinado: verifica ao abrir, repete a cada quatro horas e instala sem baixar setup manualmente
 - Builds automáticos para Windows x64, macOS Intel e macOS Apple Silicon
 - Sessões isoladas por janela para testar duas contas no mesmo computador
@@ -46,6 +50,8 @@ Na primeira execução, o backend cria automaticamente o banco `workdeck` e toda
 O rastreamento sempre acontece no próprio computador e continua salvo em SQLite. O MySQL guarda contas, amizades, presença, mensagens e a cópia sincronizada das estatísticas autorizadas.
 
 O instalador público vem configurado para `http://144.22.135.127:8787`. A opção **Configuração do servidor** permite trocar o endereço sem recompilar o aplicativo. Para desenvolvimento inteiramente local, salve `http://127.0.0.1:8787` nessa opção.
+
+A VPS usa um relay TURN opcional para chamadas e arquivos em redes restritivas. As portas públicas são `3478/tcp`, `3478/udp` e `49160-49200/tcp+udp`; o segredo fica somente no `.env` da VPS.
 
 O passo a passo completo está em [Backend local e VPS](docs/backend-e-vps.md). Para publicar novas versões e gerar os aplicativos de Mac, veja [Atualizações automáticas e macOS](docs/atualizacoes-e-macos.md). A organização interna está em [Arquitetura](docs/architecture.md).
 
@@ -96,7 +102,8 @@ cargo check
 ## Limites desta versão
 
 - O rastreamento continua enquanto o processo do Workdeck estiver na bandeja; **Sair completamente** encerra o rastreador.
-- A transferência de arquivos é P2P e depende de WebRTC. Redes restritivas podem exigir um servidor TURN, que não está incluído nesta versão.
+- A transferência de arquivos, áudio, câmera e tela usam WebRTC P2P. O relay TURN da VPS só ajuda a conectar pares quando a rede impede uma ligação direta; ele não armazena os arquivos.
+- No macOS 13 ou superior, conceda ao Workdeck acesso a Microfone, Câmera e Gravação de Tela quando o sistema solicitar. A disponibilidade de áudio do sistema e a exclusão automática do áudio do próprio Workdeck dependem da versão do WebKit e das permissões do macOS.
 - Recuperação de senha por e-mail, denúncias, assinatura Authenticode do setup do Windows e criptografia ponta a ponta das mensagens de texto ficam para a etapa de produção pública.
 - A distribuição pública no macOS sem alertas do Gatekeeper exige certificado e notarização do Apple Developer Program; o código e a esteira já aceitam essas credenciais.
 - O arquivo não é armazenado no servidor; apenas seus metadados e as mensagens do chat ficam no MySQL.

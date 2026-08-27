@@ -13,7 +13,9 @@ const envSchema = z.object({
   PUBLIC_API_URL: z.string().url().default("http://127.0.0.1:8787"),
   CLIENT_ORIGINS: z.string().default("http://localhost:1420,tauri://localhost"),
   RELEASES_DIR: z.string().min(1).default("./releases"),
-  UPDATE_MANIFEST_URL: z.union([z.string().url(), z.literal("")]).default("")
+  UPDATE_MANIFEST_URL: z.union([z.string().url(), z.literal("")]).default(""),
+  TURN_URLS: z.string().default(""),
+  TURN_SECRET: z.string().default("")
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -36,5 +38,7 @@ export const config = {
   publicApiUrl: parsed.data.PUBLIC_API_URL,
   clientOrigins: parsed.data.CLIENT_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
   releasesDir: parsed.data.RELEASES_DIR,
-  updateManifestUrl: parsed.data.UPDATE_MANIFEST_URL || null
+  updateManifestUrl: parsed.data.UPDATE_MANIFEST_URL || null,
+  turnUrls: parsed.data.TURN_URLS.split(",").map((url) => url.trim()).filter(Boolean),
+  turnSecret: parsed.data.TURN_SECRET
 };

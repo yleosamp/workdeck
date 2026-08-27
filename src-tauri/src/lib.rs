@@ -442,6 +442,34 @@ async fn show_friend_notification(app: AppHandle, friend_id: String, display_nam
 }
 
 #[tauri::command]
+fn open_stream_popout(app: AppHandle, session_id: String, title: String) -> Result<(), String> {
+    if session_id.is_empty() || !session_id.chars().all(|character| character.is_ascii_alphanumeric() || character == '-') {
+        return Err("Sessão de transmissão inválida".into());
+    }
+    let label = format!("stream-popout-{session_id}");
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let url = format!(
+        "index.html?streamPopout=1&sessionId={}&title={}",
+        encode_query(&session_id),
+        encode_query(&title)
+    );
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(960.0, 560.0)
+        .min_inner_size(420.0, 260.0)
+        .always_on_top(true)
+        .resizable(true)
+        .decorations(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn open_friend_chat(app: AppHandle, friend_id: String) -> Result<(), String> {
     show_main_window(&app);
     if !friend_id.is_empty() {
@@ -455,6 +483,8 @@ fn open_friend_chat(app: AppHandle, friend_id: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -523,7 +553,7 @@ pub fn run() {
                 _ => {}
             }
         })
-        .invoke_handler(tauri::generate_handler![sync_activity, add_tracked_app, show_friend_notification, open_friend_chat, check_for_update, install_update])
+        .invoke_handler(tauri::generate_handler![sync_activity, add_tracked_app, show_friend_notification, open_friend_chat, open_stream_popout, check_for_update, install_update])
         .build(tauri::generate_context!())
         .expect("error while building Workdeck")
         .run(|app, event| {

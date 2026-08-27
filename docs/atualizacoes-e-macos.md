@@ -2,7 +2,7 @@
 
 ## O que muda a partir da versão 0.7.0
 
-A versão 0.7.0 é a **versão ponte**. Quem ainda usa uma versão anterior precisa instalar esse setup uma última vez, porque as versões antigas não possuem o atualizador. A partir daí, o Workdeck procura atualizações ao abrir e depois a cada quatro horas. Quando encontra uma versão nova, mostra um cartão, aguarda 30 segundos e instala automaticamente. O usuário pode clicar em **Depois** para adiar ou desligar esse comportamento em **Settings → Atualizações automáticas**.
+A versão 0.8.1 é a **versão ponte para instalações HTTP**. Quem ainda usa uma versão anterior precisa instalar esse setup uma última vez, porque as versões antigas não aceitam o transporte HTTP usado pela VPS sem domínio. A partir daí, o Workdeck procura atualizações ao abrir e depois a cada quatro horas. Quando encontra uma versão nova, mostra um cartão, aguarda 30 segundos e instala automaticamente. O usuário pode clicar em **Depois** para adiar ou desligar esse comportamento em **Settings → Atualizações automáticas**.
 
 Os pacotes são assinados. O Workdeck rejeita qualquer instalador alterado ou que não tenha sido assinado com a chave privada correta.
 
@@ -50,7 +50,7 @@ O script copia o setup e a assinatura para `releases` e cria `latest.json`. Os p
 
 ## Assinatura e notarização do macOS
 
-O código está preparado para macOS 10.15 ou superior e para Intel e Apple Silicon. Para distribuir sem o aviso de aplicativo não confiável do Gatekeeper, é necessário participar do Apple Developer Program e cadastrar no GitHub:
+O código está preparado para macOS 13.0 ou superior e para Intel e Apple Silicon. O mínimo foi elevado para permitir a captura de tela e a janela de transmissão com o suporte moderno do macOS. Na primeira chamada, autorize Microfone, Câmera e Gravação de Tela em **Ajustes do Sistema → Privacidade e Segurança**. Para distribuir sem o aviso de aplicativo não confiável do Gatekeeper, é necessário participar do Apple Developer Program e cadastrar no GitHub:
 
 - `APPLE_CERTIFICATE`: certificado Developer ID Application em Base64;
 - `APPLE_CERTIFICATE_PASSWORD`: senha do certificado;

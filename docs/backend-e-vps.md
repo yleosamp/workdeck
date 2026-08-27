@@ -21,6 +21,8 @@ Campos do servidor:
 - `CLIENT_ORIGINS`: origens permitidas, separadas por vírgula
 - `RELEASES_DIR`: pasta dos instaladores quando a própria VPS hospeda as atualizações
 - `UPDATE_MANIFEST_URL`: URL opcional do `latest.json` publicado pelo GitHub
+- `TURN_URLS`: URLs do relay TURN separadas por vírgula (opcional, recomendado para chamadas e P2P fora da rede local)
+- `TURN_SECRET`: segredo compartilhado com o relay TURN (opcional; nunca publique este valor)
 
 O `.env.example` é um modelo seguro. Nunca envie o `.env` real nem coloque sua senha dentro do instalador.
 
@@ -72,6 +74,8 @@ PUBLIC_API_URL=https://api.seudominio.com
 CLIENT_ORIGINS=tauri://localhost,http://tauri.localhost
 RELEASES_DIR=./releases
 UPDATE_MANIFEST_URL=https://github.com/SEU_USUARIO/SEU_REPOSITORIO/releases/latest/download/latest.json
+TURN_URLS=turn:IP_DA_VPS:3478?transport=udp,turn:IP_DA_VPS:3478?transport=tcp
+TURN_SECRET=UMA_CHAVE_LONGA_E_ALEATORIA
 ```
 
 Manter `API_HOST=127.0.0.1` é mais seguro quando Caddy ou Nginx está na mesma VPS e faz o proxy. Se o backend estiver em outro contêiner ou máquina, ajuste para a rede privada apropriada.
@@ -102,13 +106,13 @@ Os links de perfil passam a ser `https://api.seudominio.com/p/nome_do_usuario`.
 
 A rota pública `/updates` entrega somente o manifesto e os instaladores assinados. Se usar o GitHub Releases, o backend lê `UPDATE_MANIFEST_URL`; se deixar essa variável vazia, ele serve os arquivos de `RELEASES_DIR`. Veja [Atualizações automáticas e macOS](atualizacoes-e-macos.md).
 
-O perfil público mostra os últimos 12 meses, o programa atual quando a presença está configurada como **Everyone with my link**, descrição, foto e banner.
+O perfil público mostra os últimos 12 meses, o programa atual quando a presença está configurada como **Everyone with my link**, descrição, foto e banner. A aba **Studios** usa as mesmas sessões para comunidades, canais de texto/voz, chamadas P2P e compartilhamento de tela.
 
 ## Antes de convidar muita gente
 
 - Configure backup diário do MySQL e teste a restauração.
 - Troque imediatamente a senha provisória e o `JWT_SECRET`.
 - Use um serviço de e-mail para recuperação de conta.
-- Adicione TURN para transferências P2P em redes restritivas.
+- Execute `scripts/configurar-turn-vps.sh` na VPS para instalar e manter o relay TURN em uma `screen` chamada `workdeck-turn`. O script abre somente `3478` e `49160-49200` no firewalld e não altera outros serviços.
 - Coloque monitoramento, limite de armazenamento de mensagens e política de privacidade.
 - Para várias cópias da API, adicione Redis para distribuir presença e eventos WebSocket.

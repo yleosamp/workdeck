@@ -45,13 +45,13 @@ export class PeerFileTransport {
 
   constructor(
     onSignal: (signal: SignalPayload) => void,
-    options: { onIncomingFile?: (file: IncomingPeerFile) => void; onReceiveProgress?: (progress: TransferProgress) => void } = {}
+    options: { onIncomingFile?: (file: IncomingPeerFile) => void; onReceiveProgress?: (progress: TransferProgress) => void; iceServers?: RTCIceServer[] } = {}
   ) {
     this.onSignal = onSignal;
     this.onIncomingFile = options.onIncomingFile;
     this.onReceiveProgress = options.onReceiveProgress;
     this.peer = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      iceServers: options.iceServers ?? [{ urls: "stun:stun.l.google.com:19302" }]
     });
     this.peer.onicecandidate = ({ candidate }) => {
       if (candidate) this.onSignal({ type: "ice", candidate: candidate.toJSON() });

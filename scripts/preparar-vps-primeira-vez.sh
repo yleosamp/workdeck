@@ -12,6 +12,7 @@ fi
 
 DB_PASSWORD="$(openssl rand -hex 32)"
 JWT_SECRET="$(openssl rand -hex 64)"
+TURN_SECRET="$(openssl rand -hex 32)"
 
 sudo mariadb --protocol=socket <<SQL
 CREATE DATABASE IF NOT EXISTS workdeck CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -36,6 +37,8 @@ umask 077
   printf 'CLIENT_ORIGINS=tauri://localhost,http://tauri.localhost\n'
   printf 'RELEASES_DIR=/home/ubuntu/workdeck/releases\n'
   printf 'UPDATE_MANIFEST_URL=\n'
+  printf 'TURN_URLS=turn:144.22.135.127:3478?transport=udp,turn:144.22.135.127:3478?transport=tcp\n'
+  printf 'TURN_SECRET=%s\n' "$TURN_SECRET"
 } > "$ENV_FILE"
 
 chmod 600 "$ENV_FILE"

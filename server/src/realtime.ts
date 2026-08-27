@@ -1,11 +1,21 @@
 import type { Pool } from "mysql2/promise";
 import type { WebSocket } from "ws";
+import { toPublicUser, type UserRow } from "./auth.js";
 import { utcTimestamp } from "./dates.js";
 
 type SocketEntry = { socket: WebSocket; sessionId: string };
+export type VoiceState = {
+  userId: string;
+  channelId: string;
+  muted: boolean;
+  cameraEnabled: boolean;
+  screenSharing: boolean;
+  joinedAt: string;
+};
 
 export class RealtimeHub {
   private connections = new Map<string, Set<SocketEntry>>();
+  private voiceStates = new Map<string, VoiceState>();
   constructor(private db: Pool) {}
 
   async connect(userId: string, sessionId: string, socket: WebSocket) {
@@ -26,6 +36,7 @@ export class RealtimeHub {
       if (!entries.size) this.connections.delete(userId);
     }
     if (!this.connections.has(userId)) {
+      await this.leaveVoice(userId);
       await this.db.execute("UPDATE presence SET status='offline', current_app_id=NULL, current_app_name=NULL, updated_at=UTC_TIMESTAMP(3) WHERE user_id=?", [userId]);
       await this.db.execute("UPDATE users SET last_seen_at=UTC_TIMESTAMP(3) WHERE id=?", [userId]);
       await this.broadcastPresence(userId);
@@ -56,6 +67,98 @@ export class RealtimeHub {
     for (const friendId of await this.friendIds(userId)) this.send(friendId, event);
   }
 
+  async communityMemberIds(communityId: string) {
+    const [rows] = await this.db.query<Array<{ user_id: string }> & import("mysql2").RowDataPacket[]>(
+      "SELECT user_id FROM community_members WHERE community_id=?",
+      [communityId]
+    );
+    return rows.map((row) => row.user_id);
+  }
+
+  async sendToCommunity(communityId: string, event: unknown) {
+    for (const memberId of await this.communityMemberIds(communityId)) this.send(memberId, event);
+  }
+
+  voiceStateForUser(userId: string) {
+    return this.voiceStates.get(userId) ?? null;
+  }
+
+  isInVoice(userId: string, channelId: string) {
+    return this.voiceStates.get(userId)?.channelId === channelId;
+  }
+
+  async voiceParticipant(userId: string) {
+    const [rows] = await this.db.query<Array<UserRow & {
+      status: "online" | "away" | "offline";
+      current_app_id: string | null;
+      current_app_name: string | null;
+    }> & import("mysql2").RowDataPacket[]>(
+      `SELECT u.*,COALESCE(p.status,'offline') AS status,p.current_app_id,p.current_app_name
+       FROM users u LEFT JOIN presence p ON p.user_id=u.id WHERE u.id=? LIMIT 1`,
+      [userId]
+    );
+    const state = this.voiceStates.get(userId);
+    if (!rows[0] || !state) return null;
+    const hidden = rows[0].presence_visibility === "private";
+    return {
+      ...toPublicUser(rows[0]),
+      status: hidden ? "offline" : rows[0].status,
+      currentAppId: hidden ? null : rows[0].current_app_id,
+      currentAppName: hidden ? null : rows[0].current_app_name,
+      ...state
+    };
+  }
+
+  async voiceSnapshot(channelId: string) {
+    const participants = [];
+    for (const state of this.voiceStates.values()) {
+      if (state.channelId !== channelId) continue;
+      const participant = await this.voiceParticipant(state.userId);
+      if (participant) participants.push(participant);
+    }
+    return participants;
+  }
+
+  async sendToVoice(channelId: string, event: unknown, exceptUserId?: string) {
+    for (const state of this.voiceStates.values()) {
+      if (state.channelId === channelId && state.userId !== exceptUserId) this.send(state.userId, event);
+    }
+  }
+
+  async joinVoice(userId: string, channelId: string) {
+    const previous = this.voiceStates.get(userId);
+    if (previous && previous.channelId !== channelId) await this.leaveVoice(userId);
+    if (!this.voiceStates.has(userId) || previous?.channelId !== channelId) {
+      this.voiceStates.set(userId, {
+        userId,
+        channelId,
+        muted: false,
+        cameraEnabled: false,
+        screenSharing: false,
+        joinedAt: new Date().toISOString()
+      });
+      const participant = await this.voiceParticipant(userId);
+      if (participant) await this.sendToVoice(channelId, { type: "voice.participant", action: "joined", participant });
+    }
+    return this.voiceSnapshot(channelId);
+  }
+
+  async updateVoice(userId: string, update: Partial<Pick<VoiceState, "muted" | "cameraEnabled" | "screenSharing">>) {
+    const state = this.voiceStates.get(userId);
+    if (!state) return null;
+    Object.assign(state, update);
+    const participant = await this.voiceParticipant(userId);
+    if (participant) await this.sendToVoice(state.channelId, { type: "voice.participant", action: "updated", participant });
+    return participant;
+  }
+
+  async leaveVoice(userId: string) {
+    const state = this.voiceStates.get(userId);
+    if (!state) return;
+    this.voiceStates.delete(userId);
+    await this.sendToVoice(state.channelId, { type: "voice.participant", action: "left", participant: { userId, channelId: state.channelId } });
+  }
+
   async broadcastPresence(userId: string) {
     const [rows] = await this.db.query<Array<{
       status: string;
@@ -69,18 +172,28 @@ export class RealtimeHub {
       [userId]
     );
     if (!rows[0]) return;
-    const hidden = rows[0].presence_visibility === "private";
-    await this.broadcastToFriends(userId, {
-      type: "presence.updated",
-      userId,
-      presence: {
-        status: hidden ? "offline" : rows[0].status,
-        currentAppId: hidden ? null : rows[0].current_app_id,
-        currentAppName: hidden ? null : rows[0].current_app_name,
-        sessionStartedAt: hidden ? null : utcTimestamp(rows[0].session_started_at),
-        updatedAt: utcTimestamp(rows[0].updated_at) ?? new Date().toISOString()
-      }
-    });
+    const friendIds = new Set(await this.friendIds(userId));
+    const [communityRows] = await this.db.query<Array<{ user_id: string }> & import("mysql2").RowDataPacket[]>(
+      `SELECT DISTINCT other.user_id FROM community_members mine
+       JOIN community_members other ON other.community_id=mine.community_id
+       WHERE mine.user_id=? AND other.user_id<>?`,
+      [userId, userId]
+    );
+    const recipients = new Set([...friendIds, ...communityRows.map((row) => row.user_id)]);
+    for (const recipientId of recipients) {
+      const hidden = rows[0].presence_visibility === "private" || (rows[0].presence_visibility === "friends" && !friendIds.has(recipientId));
+      this.send(recipientId, {
+        type: "presence.updated",
+        userId,
+        presence: {
+          status: hidden ? "offline" : rows[0].status,
+          currentAppId: hidden ? null : rows[0].current_app_id,
+          currentAppName: hidden ? null : rows[0].current_app_name,
+          sessionStartedAt: hidden ? null : utcTimestamp(rows[0].session_started_at),
+          updatedAt: utcTimestamp(rows[0].updated_at) ?? new Date().toISOString()
+        }
+      });
+    }
   }
 
   async markStaleAway() {

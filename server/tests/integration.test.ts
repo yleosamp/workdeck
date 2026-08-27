@@ -19,6 +19,8 @@ let secondId = "";
 let requestId = "";
 let messageId = "";
 let serverAddress = "";
+let communityId = "";
+let voiceChannelId = "";
 
 const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
@@ -117,6 +119,65 @@ describe.sequential("Workdeck API", () => {
     expect(leaderboard.entries).toHaveLength(2);
     expect(leaderboard.entries[0]).toMatchObject({ id: firstId, rank: 1, isCurrentUser: true, seconds: 1800 });
     expect(leaderboard.entries[1]).toMatchObject({ id: secondId, rank: 2, isCurrentUser: false, seconds: 0 });
+  });
+
+  it("creates a Studio, invites a friend, and persists channel messages", async () => {
+    const created = await app.inject({ method: "POST", url: "/communities", headers: auth(firstToken), payload: { name: "Motion Lab", description: "Comunidade de integração", iconColor: "#72e3a2" } });
+    expect(created.statusCode).toBe(201);
+    communityId = created.json().community.id;
+    voiceChannelId = created.json().community.channels.find((channel: { kind: string }) => channel.kind === "voice").id;
+    const textChannelId = created.json().community.channels.find((channel: { kind: string }) => channel.kind === "text").id;
+
+    const extraChannel = await app.inject({ method: "POST", url: `/communities/${communityId}/channels`, headers: auth(firstToken), payload: { name: "revisão", kind: "text" } });
+    expect(extraChannel.statusCode).toBe(201);
+    const publicInvite = await app.inject({ method: "POST", url: `/communities/${communityId}/invites`, headers: auth(firstToken), payload: { expiresInHours: 24, maxUses: null } });
+    expect(publicInvite.statusCode).toBe(201);
+    const landing = await app.inject({ method: "GET", url: `/join/${publicInvite.json().code}` });
+    expect(landing.body).toContain("workdeck://invite/");
+    const invited = await app.inject({ method: "POST", url: `/communities/${communityId}/invite-friend`, headers: auth(firstToken), payload: { userId: secondId } });
+    expect(invited.statusCode).toBe(201);
+    const code = invited.json().invite.code;
+    const accepted = await app.inject({ method: "POST", url: `/community-invites/${code}/accept`, headers: auth(secondToken) });
+    expect(accepted.json()).toMatchObject({ accepted: true, communityId });
+
+    const sent = await app.inject({ method: "POST", url: `/community-channels/${textChannelId}/messages`, headers: auth(secondToken), payload: { body: "Review pronta para o time" } });
+    expect(sent.statusCode).toBe(201);
+    const history = await app.inject({ method: "GET", url: `/community-channels/${textChannelId}/messages`, headers: auth(firstToken) });
+    expect(history.json().messages[0]).toMatchObject({ body: "Review pronta para o time", senderId: secondId });
+    const list = await app.inject({ method: "GET", url: "/communities", headers: auth(secondToken) });
+    expect(list.json().communities[0].members).toHaveLength(2);
+    const rtc = await app.inject({ method: "GET", url: "/rtc/config", headers: auth(firstToken) });
+    expect(rtc.json().iceServers[0].urls).toContain("stun:");
+  });
+
+  it("isolates and relays Studio voice signaling only inside the selected call", async () => {
+    const wsBase = serverAddress.replace(/^http/, "ws");
+    const firstSocket = new WebSocket(`${wsBase}/realtime`);
+    const secondSocket = new WebSocket(`${wsBase}/realtime`);
+    const ready = (socket: WebSocket, token: string) => new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Voice socket timeout")), 3_000);
+      socket.on("open", () => socket.send(JSON.stringify({ type: "auth", token })));
+      socket.on("message", (raw) => { if (JSON.parse(raw.toString()).type === "realtime.ready") { clearTimeout(timeout); resolve(); } });
+    });
+    await Promise.all([ready(firstSocket, firstToken), ready(secondSocket, secondToken)]);
+    firstSocket.send(JSON.stringify({ type: "voice.join", channelId: voiceChannelId }));
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("First voice snapshot timeout")), 3_000);
+      firstSocket.on("message", (raw) => { const event = JSON.parse(raw.toString()); if (event.type === "voice.snapshot") { clearTimeout(timeout); resolve(); } });
+    });
+    const joined = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Voice participant timeout")), 3_000);
+      firstSocket.on("message", (raw) => { const event = JSON.parse(raw.toString()); if (event.type === "voice.participant" && event.action === "joined" && event.participant.userId === secondId) { clearTimeout(timeout); resolve(event); } });
+    });
+    secondSocket.send(JSON.stringify({ type: "voice.join", channelId: voiceChannelId }));
+    expect((await joined).action).toBe("joined");
+    const relayed = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Voice signal timeout")), 3_000);
+      secondSocket.on("message", (raw) => { const event = JSON.parse(raw.toString()); if (event.type === "voice.signal") { clearTimeout(timeout); resolve(event); } });
+    });
+    firstSocket.send(JSON.stringify({ type: "voice.signal", channelId: voiceChannelId, targetUserId: secondId, signal: { description: { type: "offer", sdp: "test" } } }));
+    expect((await relayed).userId).toBe(firstId);
+    firstSocket.close(); secondSocket.close();
   });
 
   it("relays presence and WebRTC signaling between friends", async () => {

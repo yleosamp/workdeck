@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyPluginAsync } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
-import { areFriends, isBlocked } from "../auth.js";
+import { canDirectMessage } from "../auth.js";
 import { utcTimestamp } from "../dates.js";
 
 const fileSchema = z.object({
@@ -34,7 +34,7 @@ export const chatRoutes: FastifyPluginAsync = async (app) => {
   app.get("/chat/:userId/messages", { preHandler: app.authenticate }, async (request, reply) => {
     const { userId } = z.object({ userId: z.string().uuid() }).parse(request.params);
     const { before, limit } = z.object({ before: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);
-    if (!(await areFriends(app, request.user.sub, userId)) || await isBlocked(app, request.user.sub, userId)) return reply.code(403).send({ error: "Conversa indisponível" });
+    if (!(await canDirectMessage(app, request.user.sub, userId))) return reply.code(403).send({ error: "Conversa indisponível" });
     const parameters: unknown[] = [request.user.sub, userId, userId, request.user.sub];
     let beforeClause = "";
     if (before) { beforeClause = "AND created_at < ?"; parameters.push(new Date(before)); }
@@ -48,7 +48,7 @@ export const chatRoutes: FastifyPluginAsync = async (app) => {
   app.post("/chat/:userId/messages", { preHandler: app.authenticate }, async (request, reply) => {
     const { userId } = z.object({ userId: z.string().uuid() }).parse(request.params);
     const body = z.object({ text: z.string().trim().min(1).max(10_000).optional(), file: fileSchema.optional() }).refine((value) => value.text || value.file, "Mensagem vazia").parse(request.body);
-    if (!(await areFriends(app, request.user.sub, userId)) || await isBlocked(app, request.user.sub, userId)) return reply.code(403).send({ error: "Você só pode conversar com amigos" });
+    if (!(await canDirectMessage(app, request.user.sub, userId))) return reply.code(403).send({ error: "Você pode conversar com amigos e membros das suas comunidades" });
     const id = randomUUID();
     const delivered = app.hub.isOnline(userId);
     await app.db.execute(
