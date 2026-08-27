@@ -10,6 +10,8 @@
     "core:window:allow-is-minimized",
     "core:window:allow-set-skip-taskbar",
     "dialog:allow-save",
-    "fs:allow-write-file"
+    "fs:allow-write-file",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir"
   ]
 }

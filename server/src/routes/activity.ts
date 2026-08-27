@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
+import { utcTimestamp } from "../dates.js";
 
 const appSchema = z.object({
   id: z.string().min(1).max(80),
@@ -41,10 +42,11 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
     const body = z.object({
       apps: z.array(appSchema).max(100),
       heatmap: z.array(daySchema).max(366),
-      daily: z.array(appDaySchema).max(36_600).default([])
+      daily: z.array(appDaySchema).max(36_600).default([]),
+      away: z.boolean().default(false)
     }).parse(request.body);
     const connection = await app.db.getConnection();
-    const running = body.apps.find((item) => item.status === "running");
+    const running = body.away ? undefined : body.apps.find((item) => item.status === "running");
     const localToday = body.heatmap.at(-1)?.date ?? new Date().toISOString().slice(0, 10);
     try {
       await connection.beginTransaction();
@@ -77,11 +79,11 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       }
       await connection.execute(
         `INSERT INTO presence (user_id,status,current_app_id,current_app_name,session_started_at,updated_at)
-         VALUES (?,'online',?,?,IF(? IS NULL,NULL,UTC_TIMESTAMP(3)),UTC_TIMESTAMP(3))
-         ON DUPLICATE KEY UPDATE status='online',
+         VALUES (?,?,?,?,IF(? IS NULL,NULL,UTC_TIMESTAMP(3)),UTC_TIMESTAMP(3))
+         ON DUPLICATE KEY UPDATE status=VALUES(status),
            session_started_at=IF(VALUES(current_app_id) IS NULL,NULL,IF(current_app_id=VALUES(current_app_id),session_started_at,UTC_TIMESTAMP(3))),
            current_app_id=VALUES(current_app_id),current_app_name=VALUES(current_app_name),updated_at=UTC_TIMESTAMP(3)`,
-        [request.user.sub, running?.id ?? null, running?.name ?? null, running?.id ?? null]
+        [request.user.sub, body.away ? "away" : "online", running?.id ?? null, running?.name ?? null, running?.id ?? null]
       );
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
@@ -98,7 +100,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       app.db.query<Array<{ date: string; appId: string; appName: string; seconds: number }> & RowDataPacket[]>(
         "SELECT activity_date AS date,app_id AS appId,app_name AS appName,seconds FROM activity_daily WHERE user_id=? ORDER BY activity_date,app_id", [request.user.sub])
     ]);
-    return { totals, daily, dailyByApp };
+    return { totals: totals.map((item) => ({ ...item, lastOpenedAt: utcTimestamp(item.lastOpenedAt) })), daily, dailyByApp };
   });
 
   app.get("/leaderboard", { preHandler: app.authenticate }, async (request) => {

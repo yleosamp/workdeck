@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { areFriends, isBlocked } from "../auth.js";
+import { utcTimestamp } from "../dates.js";
 
 const fileSchema = z.object({
   name: z.string().min(1).max(255),
@@ -23,9 +24,9 @@ function mapMessage(row: Record<string, unknown>) {
     text: row.body,
     type: row.message_type,
     file,
-    createdAt: row.created_at,
-    deliveredAt: row.delivered_at,
-    readAt: row.read_at
+    createdAt: utcTimestamp(row.created_at),
+    deliveredAt: utcTimestamp(row.delivered_at),
+    readAt: utcTimestamp(row.read_at)
   };
 }
 

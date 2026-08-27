@@ -35,7 +35,8 @@ import {
   Trophy,
   UserPlus,
   Users,
-  X
+  X,
+  ZoomIn
 } from "lucide-react";
 import { AppLogo } from "./components/AppLogo";
 import { AuthView } from "./components/AuthView";
@@ -47,7 +48,7 @@ import { addTrackedApp, getActivitySnapshot } from "./lib/activity";
 import { formatDuration, formatFileSize, percentChange } from "./lib/format";
 import { PeerFileTransport, previewKindForFile, runP2PSelfTest, type SignalPayload } from "./lib/p2p";
 import { notifySoftwareStarted } from "./lib/notifications";
-import { saveReceivedFile } from "./lib/save-file";
+import { openSavedFile, revealSavedFile, saveReceivedFile } from "./lib/save-file";
 import { social, type ApiFriend, type ApiFriendRequest, type ApiLeaderboard, type ApiMessage, type ApiProfile, type LeaderboardPeriod, type SocialUser } from "./lib/social";
 import type { AppActivityDay, Friend, HeatmapDay, Message, TrackedApp, View } from "./types";
 
@@ -364,10 +365,17 @@ function mapApiMessage(message: ApiMessage, currentUserId: string): Message {
   };
 }
 
-function FileCard({ file, onAccept, onSave }: { file: NonNullable<Message["file"]>; onAccept?: () => void; onSave?: () => void }) {
+function FileCard({ file, onAccept, onSave, onOpenImage, onOpenSaved, onRevealSaved }: {
+  file: NonNullable<Message["file"]>;
+  onAccept?: () => void;
+  onSave?: () => void;
+  onOpenImage?: () => void;
+  onOpenSaved?: () => void;
+  onRevealSaved?: () => void;
+}) {
   return (
     <div className={`file-card ${file.previewKind ? "file-card-previewable" : ""}`}>
-      {file.previewKind === "image" && file.previewUrl && <button className="file-image-preview" onClick={() => window.open(file.previewUrl, "_blank")} title="Abrir preview da imagem"><img src={file.previewUrl} alt={`Preview de ${file.name}`} /></button>}
+      {file.previewKind === "image" && file.previewUrl && <button className="file-image-preview" onClick={onOpenImage} title="Ampliar imagem"><img src={file.previewUrl} alt={`Preview de ${file.name}`} /><span><ZoomIn size={16} /> Clique para ampliar</span></button>}
       {file.previewKind === "audio" && file.previewUrl && <div className="file-audio-preview"><audio controls preload="metadata" src={file.previewUrl}>Seu computador não conseguiu reproduzir este formato.</audio></div>}
       <div className="file-card-row">
         <div className="file-icon"><FolderOpen size={22} /></div>
@@ -378,6 +386,7 @@ function FileCard({ file, onAccept, onSave }: { file: NonNullable<Message["file"
             ? <button className="file-accept" onClick={onSave}><Download size={15} /> Salvar</button>
             : <span className={`file-state file-state-${file.state}`}>{file.state === "complete" ? <Check size={17} /> : file.state === "offered" ? <Clock3 size={15} /> : `${file.progress}%`}</span>}
       </div>
+      {file.savedPath && <div className="file-saved-actions"><button onClick={onOpenSaved}><ExternalLink size={14} /> Abrir</button><button onClick={onRevealSaved}><FolderOpen size={14} /> Abrir na pasta</button></div>}
     </div>
   );
 }
@@ -389,7 +398,16 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
   const [error, setError] = useState("");
   const [typing, setTyping] = useState(false);
   const [showActions, setShowActions] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [showAttachmentActions, setShowAttachmentActions] = useState(false);
+  const [pendingAttachment, setPendingAttachment] = useState<File | null>(null);
+  const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string>();
+  const [sendingAttachment, setSendingAttachment] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const [zoomedImage, setZoomedImage] = useState<{ url: string; name: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const cameraStream = useRef<MediaStream | null>(null);
   const transports = useRef(new Map<string, PeerFileTransport>());
   const queuedSignals = useRef(new Map<string, SignalPayload[]>());
   const pendingOutgoing = useRef(new Map<string, { file: File; messageId: string; targetUserId: string }>());
@@ -405,6 +423,39 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
     for (const url of previewUrls.current) URL.revokeObjectURL(url);
     for (const transport of transports.current.values()) transport.close();
   }, []);
+
+  useEffect(() => {
+    if (!pendingAttachment || previewKindForFile(pendingAttachment.name, pendingAttachment.type) === undefined) {
+      setPendingPreviewUrl(undefined);
+      return;
+    }
+    const url = URL.createObjectURL(pendingAttachment);
+    setPendingPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pendingAttachment]);
+
+  useEffect(() => {
+    if (!cameraOpen) return;
+    let active = true;
+    setCameraError("");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("A câmera não está disponível neste computador.");
+      return;
+    }
+    void navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false }).then((stream) => {
+      if (!active) { stream.getTracks().forEach((track) => track.stop()); return; }
+      cameraStream.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        void videoRef.current.play();
+      }
+    }).catch(() => setCameraError("Não foi possível acessar a câmera. Confira a permissão do sistema."));
+    return () => {
+      active = false;
+      cameraStream.current?.getTracks().forEach((track) => track.stop());
+      cameraStream.current = null;
+    };
+  }, [cameraOpen]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -478,6 +529,51 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
     } catch (reason) { setError(reason instanceof Error ? reason.message : "A transferência falhou"); }
   };
 
+  const queueAttachment = (file: File) => {
+    if (file.size > 20 * 1024 * 1024 * 1024) {
+      setError("O arquivo excede o limite de 20 GB");
+      return;
+    }
+    setShowAttachmentActions(false);
+    setPendingAttachment(file);
+  };
+
+  const confirmAttachment = async () => {
+    if (!pendingAttachment || sendingAttachment) return;
+    const file = pendingAttachment;
+    setSendingAttachment(true);
+    try {
+      await sendFile(file);
+      setPendingAttachment(null);
+    } finally { setSendingAttachment(false); }
+  };
+
+  const pasteAttachment = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) => item.kind === "file" && item.type.startsWith("image/"));
+    const blob = imageItem?.getAsFile();
+    if (!blob) return;
+    event.preventDefault();
+    const extension = blob.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    queueAttachment(new File([blob], `captura-${stamp}.${extension}`, { type: blob.type, lastModified: Date.now() }));
+  };
+
+  const takeCameraPhoto = async () => {
+    const video = videoRef.current;
+    if (!video?.videoWidth || !video.videoHeight) {
+      setCameraError("A câmera ainda está iniciando. Tente novamente em um instante.");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", .92));
+    if (!blob) { setCameraError("Não foi possível capturar a foto."); return; }
+    setCameraOpen(false);
+    queueAttachment(new File([blob], `foto-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`, { type: "image/jpeg", lastModified: Date.now() }));
+  };
+
   const acceptFile = async (message: Message) => {
     if (!message.file || !friend) return;
     const transferId = message.file.transferId;
@@ -493,7 +589,7 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
             if (previewUrl) previewUrls.current.add(previewUrl);
             updateFile(message.id, { state: "complete", progress: 100, previewKind, previewUrl, receivedBlob: blob, saved: false });
             const saved = await saveReceivedFile(name, blob);
-            updateFile(message.id, { saved: Boolean(saved) });
+            updateFile(message.id, { saved: saved.saved, savedPath: saved.path });
           } catch (reason) {
             updateFile(message.id, { state: "failed", progress: 0 });
             setError(reason instanceof Error ? reason.message : "Não foi possível salvar o arquivo");
@@ -512,8 +608,14 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
     if (!message.file?.receivedBlob) return;
     try {
       const saved = await saveReceivedFile(message.file.name, message.file.receivedBlob);
-      if (saved) updateFile(message.id, { saved: true });
+      if (saved.saved) updateFile(message.id, { saved: true, savedPath: saved.path });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível salvar o arquivo"); }
+  };
+
+  const runSavedFileAction = async (action: "open" | "reveal", path?: string) => {
+    if (!path) return;
+    try { await (action === "open" ? openSavedFile(path) : revealSavedFile(path)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível abrir o arquivo"); }
   };
 
   const removeFriend = async () => {
@@ -532,7 +634,7 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
 
   if (!friend) return <div className="chat-empty"><MessageCircle size={30} /><h2>Nenhum amigo ainda</h2><p>Adicione alguém para começar uma conversa.</p></div>;
 
-  return (
+  return <>
     <div className="chat-layout">
       <aside className="conversation-list">
         <div className="conversation-heading"><div><span className="eyebrow">Direct messages</span><h2>Messages</h2></div><button className="icon-button"><Plus size={18} /></button></div>
@@ -558,22 +660,28 @@ function ChatView({ friends, currentUserId, initialFriendId, onFriendsChanged, o
           {thread.map((message) => (
             <div className={`message ${message.authorId === currentUserId ? "message-mine" : ""}`} key={message.id}>
               {message.authorId !== currentUserId && <Avatar friend={friend} size="sm" />}
-              <div className="message-content">{message.text && <p>{message.text}</p>}{message.file && <FileCard file={message.file} onAccept={message.authorId !== currentUserId ? () => void acceptFile(message) : undefined} onSave={message.file.receivedBlob ? () => void saveFileAgain(message) : undefined} />}<span>{message.sentAt}</span></div>
+              <div className="message-content">{message.text && <p>{message.text}</p>}{message.file && <FileCard file={message.file} onAccept={message.authorId !== currentUserId ? () => void acceptFile(message) : undefined} onSave={message.file.receivedBlob ? () => void saveFileAgain(message) : undefined} onOpenImage={message.file.previewUrl ? () => setZoomedImage({ url: message.file!.previewUrl!, name: message.file!.name }) : undefined} onOpenSaved={() => void runSavedFileAction("open", message.file?.savedPath)} onRevealSaved={() => void runSavedFileAction("reveal", message.file?.savedPath)} />}<span>{message.sentAt}</span></div>
             </div>
           ))}
           {typing && <div className="typing-indicator">{friend.name} is typing…</div>}
           {error && <div className="chat-error">{error}</div>}
         </div>
         <div className="composer">
-          <input ref={inputRef} aria-label="Choose a file to send" type="file" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) sendFile(file); event.target.value = ""; }} />
-          <button className="attach-button" onClick={() => inputRef.current?.click()} title="Send a file peer-to-peer"><Paperclip size={19} /></button>
-          <input value={draft} onChange={(event) => { setDraft(event.target.value); try { social.sendRealtime({ type: "chat.typing", targetUserId: friend.id, isTyping: Boolean(event.target.value) }); } catch { /* reconnecting */ } }} onKeyDown={(event) => event.key === "Enter" && void sendText()} placeholder={`Message ${friend.name}`} />
+          <div className="composer-attachment">
+            <input ref={fileInputRef} aria-label="Escolher arquivo para enviar" type="file" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) queueAttachment(file); event.target.value = ""; }} />
+            <button className="attach-button" onClick={() => setShowAttachmentActions((current) => !current)} title="Enviar por P2P"><Paperclip size={19} /></button>
+            {showAttachmentActions && <div className="attachment-menu"><button onClick={() => fileInputRef.current?.click()}><FileUp size={15} /> Escolher arquivo</button><button onClick={() => { setShowAttachmentActions(false); setCameraOpen(true); }}><Camera size={15} /> Tirar foto</button></div>}
+          </div>
+          <input value={draft} onPaste={pasteAttachment} onChange={(event) => { setDraft(event.target.value); try { social.sendRealtime({ type: "chat.typing", targetUserId: friend.id, isTyping: Boolean(event.target.value) }); } catch { /* reconnecting */ } }} onKeyDown={(event) => event.key === "Enter" && void sendText()} placeholder={`Mensagem para ${friend.name} · cole imagens com Ctrl+V`} />
           <span className="p2p-label"><ShieldCheck size={13} /> P2P</span>
           <button className="send-button" onClick={() => void sendText()}><Send size={17} /></button>
         </div>
       </section>
     </div>
-  );
+    {pendingAttachment && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !sendingAttachment && setPendingAttachment(null)}><section className="modal attachment-confirm-modal"><button className="icon-button modal-close" onClick={() => setPendingAttachment(null)} disabled={sendingAttachment}><X size={17} /></button><span className="modal-icon"><Paperclip size={20} /></span><h2>Enviar este arquivo?</h2><p>Confirme antes de iniciar a transferência P2P para {friend.name}.</p>{previewKindForFile(pendingAttachment.name, pendingAttachment.type) === "image" && pendingPreviewUrl && <img className="attachment-confirm-image" src={pendingPreviewUrl} alt="Imagem que será enviada" />}{previewKindForFile(pendingAttachment.name, pendingAttachment.type) === "audio" && pendingPreviewUrl && <audio className="attachment-confirm-audio" controls src={pendingPreviewUrl} />}<div className="attachment-confirm-file"><FolderOpen size={20} /><div><strong>{pendingAttachment.name}</strong><span>{formatFileSize(pendingAttachment.size)} · não será enviado ao servidor</span></div></div><div className="attachment-confirm-actions"><button className="secondary-button" onClick={() => setPendingAttachment(null)} disabled={sendingAttachment}>Cancelar</button><button className="primary-button" onClick={() => void confirmAttachment()} disabled={sendingAttachment}><Send size={15} /> {sendingAttachment ? "Preparando…" : "Enviar"}</button></div></section></div>}
+    {cameraOpen && <div className="modal-backdrop"><section className="modal camera-modal"><button className="icon-button modal-close" onClick={() => setCameraOpen(false)}><X size={17} /></button><span className="modal-icon"><Camera size={20} /></span><h2>Tirar foto</h2><p>A foto também será enviada diretamente por P2P, sem armazenamento na VPS.</p><div className="camera-frame"><video ref={videoRef} autoPlay playsInline muted />{cameraError && <span>{cameraError}</span>}</div><button className="primary-button modal-save" onClick={() => void takeCameraPhoto()} disabled={Boolean(cameraError)}><Camera size={16} /> Capturar foto</button></section></div>}
+    {zoomedImage && <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Visualização de ${zoomedImage.name}`} onMouseDown={(event) => event.target === event.currentTarget && setZoomedImage(null)}><button className="image-lightbox-close" onClick={() => setZoomedImage(null)} aria-label="Fechar"><X size={22} /></button><img src={zoomedImage.url} alt={zoomedImage.name} /><span>{zoomedImage.name}</span></div>}
+  </>;
 }
 
 async function prepareProfileImage(file: File, maxWidth: number, maxHeight: number) {

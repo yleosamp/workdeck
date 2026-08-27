@@ -60,6 +60,7 @@ export interface TransferFile {
   previewUrl?: string;
   receivedBlob?: Blob;
   saved?: boolean;
+  savedPath?: string;
 }
 
 export interface ActivitySnapshot {
@@ -67,4 +68,5 @@ export interface ActivitySnapshot {
   heatmap: HeatmapDay[];
   appDaily: AppActivityDay[];
   trackedAt: string;
+  isAway: boolean;
 }

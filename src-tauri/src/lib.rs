@@ -9,10 +9,12 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 struct Tracker {
     database: Mutex<Connection>,
     last_sync: Mutex<Instant>,
+    last_sleep_gap: Mutex<Option<Instant>>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +49,7 @@ struct ActivitySnapshot {
     heatmap: Vec<HeatmapDay>,
     app_daily: Vec<AppActivityDay>,
     tracked_at: String,
+    is_away: bool,
 }
 
 #[derive(Serialize)]
@@ -170,11 +173,18 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         .map(|process| process.name().to_string_lossy().to_lowercase())
         .collect();
 
-    let elapsed_seconds = {
+    let (elapsed_seconds, detected_sleep_gap) = {
         let mut last_sync = tracker.last_sync.lock().map_err(|error| error.to_string())?;
-        let seconds = last_sync.elapsed().as_secs().min(60) as i64;
+        let raw_seconds = last_sync.elapsed().as_secs();
         *last_sync = Instant::now();
-        seconds
+        (if raw_seconds > 45 { 0 } else { raw_seconds as i64 }, raw_seconds > 45)
+    };
+    let is_away = {
+        let mut last_sleep_gap = tracker.last_sleep_gap.lock().map_err(|error| error.to_string())?;
+        if detected_sleep_gap { *last_sleep_gap = Some(Instant::now()); }
+        let away = last_sleep_gap.map(|instant| instant.elapsed() < StdDuration::from_secs(20)).unwrap_or(false);
+        if !away { *last_sleep_gap = None; }
+        away
     };
 
     let today = Local::now().format("%Y-%m-%d").to_string();
@@ -212,7 +222,7 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         .map(|(id, _, _, _, _)| id.clone())
         .collect();
 
-    if elapsed_seconds > 0 && !running_ids.is_empty() {
+    if !is_away && elapsed_seconds > 0 && !running_ids.is_empty() {
         let transaction = connection.transaction().map_err(|error| error.to_string())?;
         for id in &running_ids {
             transaction.execute(
@@ -246,7 +256,7 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
             )
             .unwrap_or(0);
         apps.push(TrackedApp {
-            is_running: running_ids.contains(&id),
+            is_running: !is_away && running_ids.contains(&id),
             id,
             name,
             category,
@@ -293,7 +303,7 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         rows
     };
 
-    Ok(ActivitySnapshot { apps, heatmap, app_daily, tracked_at: now })
+    Ok(ActivitySnapshot { apps, heatmap, app_daily, tracked_at: now, is_away })
 }
 
 #[tauri::command]
@@ -445,10 +455,13 @@ fn open_friend_chat(app: AppHandle, friend_id: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let _ = app.autolaunch().enable();
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let connection = Connection::open(data_dir.join("workdeck.db"))?;
@@ -456,6 +469,7 @@ pub fn run() {
             app.manage(Tracker {
                 database: Mutex::new(connection),
                 last_sync: Mutex::new(Instant::now()),
+                last_sleep_gap: Mutex::new(None),
             });
 
             let tracker_app = app.handle().clone();
@@ -490,6 +504,12 @@ pub fn run() {
                 tray_builder = tray_builder.icon_as_template(true);
             }
             tray_builder.build(app)?;
+            if std::env::args().any(|argument| argument == "--minimized") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_skip_taskbar(true);
+                    let _ = window.hide();
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

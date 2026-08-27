@@ -19,6 +19,7 @@ type NativeSnapshot = {
   heatmap: { date: string; seconds: number }[];
   app_daily: { date: string; app_id: string; seconds: number }[];
   tracked_at: string;
+  is_away: boolean;
 };
 
 const metadata: Record<string, Pick<TrackedApp, "shortName" | "glow">> = {
@@ -46,6 +47,7 @@ function browserCustomApps(): TrackedApp[] {
 function normalize(native: NativeSnapshot): ActivitySnapshot {
   return {
     trackedAt: native.tracked_at,
+    isAway: native.is_away,
     heatmap: native.heatmap,
     appDaily: native.app_daily.map((day) => ({ date: day.date, appId: day.app_id, seconds: day.seconds })),
     apps: native.apps.map((app) => ({
@@ -76,7 +78,8 @@ export async function getActivitySnapshot(): Promise<ActivitySnapshot> {
         appId: app.id,
         seconds: Math.round(day.seconds * (app.totalSeconds / weightTotal))
       }))),
-      trackedAt: new Date().toISOString()
+      trackedAt: new Date().toISOString(),
+      isAway: false
     };
   }
   return normalize(await invoke<NativeSnapshot>("sync_activity"));

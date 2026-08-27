@@ -1,5 +1,6 @@
 import type { Pool } from "mysql2/promise";
 import type { WebSocket } from "ws";
+import { utcTimestamp } from "./dates.js";
 
 type SocketEntry = { socket: WebSocket; sessionId: string };
 
@@ -76,9 +77,22 @@ export class RealtimeHub {
         status: hidden ? "offline" : rows[0].status,
         currentAppId: hidden ? null : rows[0].current_app_id,
         currentAppName: hidden ? null : rows[0].current_app_name,
-        sessionStartedAt: hidden ? null : rows[0].session_started_at,
-        updatedAt: rows[0].updated_at
+        sessionStartedAt: hidden ? null : utcTimestamp(rows[0].session_started_at),
+        updatedAt: utcTimestamp(rows[0].updated_at) ?? new Date().toISOString()
       }
     });
+  }
+
+  async markStaleAway() {
+    const [rows] = await this.db.query<Array<{ user_id: string }> & import("mysql2").RowDataPacket[]>(
+      `SELECT user_id FROM presence
+       WHERE status='online' AND updated_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 90 SECOND)`
+    );
+    if (!rows.length) return;
+    await this.db.execute(
+      `UPDATE presence SET status='away',current_app_id=NULL,current_app_name=NULL,session_started_at=NULL,updated_at=UTC_TIMESTAMP(3)
+       WHERE status='online' AND updated_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 90 SECOND)`
+    );
+    for (const row of rows) await this.broadcastPresence(row.user_id);
   }
 }

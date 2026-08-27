@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { z } from "zod";
 import { areFriends, isBlocked, normalizeHandle, toPublicUser, type UserRow } from "../auth.js";
+import { utcTimestamp } from "../dates.js";
 
 async function createFriendship(connection: PoolConnection, first: string, second: string) {
   const [low, high] = [first, second].sort();
@@ -31,7 +32,7 @@ export const friendRoutes: FastifyPluginAsync = async (app) => {
       return {
         ...toPublicUser(row), status: hidden ? "offline" : row.status,
         currentAppId: hidden ? null : row.current_app_id, currentAppName: hidden ? null : row.current_app_name,
-        sessionStartedAt: hidden ? null : row.session_started_at, lastSeenAt: hidden ? null : row.last_seen_at,
+        sessionStartedAt: hidden ? null : utcTimestamp(row.session_started_at), lastSeenAt: hidden ? null : utcTimestamp(row.last_seen_at),
         unreadCount: Number(row.unread_count)
       };
     }) };
@@ -44,7 +45,7 @@ export const friendRoutes: FastifyPluginAsync = async (app) => {
     const [outgoing] = await app.db.query<Array<UserRow & { request_id: string; request_created_at: string }> & RowDataPacket[]>(
       `SELECT u.*, fr.id AS request_id, fr.created_at AS request_created_at FROM friend_requests fr JOIN users u ON u.id=fr.receiver_id
        WHERE fr.sender_id=? AND fr.status='pending' ORDER BY fr.created_at DESC`, [request.user.sub]);
-    const map = (row: UserRow & { request_id: string; request_created_at: string }) => ({ id: row.request_id, createdAt: row.request_created_at, user: toPublicUser(row) });
+    const map = (row: UserRow & { request_id: string; request_created_at: string }) => ({ id: row.request_id, createdAt: utcTimestamp(row.request_created_at)!, user: toPublicUser(row) });
     return { incoming: incoming.map(map), outgoing: outgoing.map(map) };
   });
 
@@ -145,6 +146,6 @@ export const friendRoutes: FastifyPluginAsync = async (app) => {
        WHERE b.blocker_id=? ORDER BY b.created_at DESC`,
       [request.user.sub]
     );
-    return { users: rows.map((row) => ({ ...toPublicUser(row), blockedAt: row.blocked_at })) };
+    return { users: rows.map((row) => ({ ...toPublicUser(row), blockedAt: utcTimestamp(row.blocked_at)! })) };
   });
 };

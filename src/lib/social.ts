@@ -188,7 +188,8 @@ class SocialClient {
         return { id: app.id, name: app.name, totalSeconds: app.totalSeconds, todaySeconds: app.todaySeconds, lastOpened: Number.isNaN(parsed) ? null : new Date(parsed).toISOString(), status: app.status };
       }),
       heatmap: snapshot.heatmap,
-      daily: snapshot.appDaily
+      daily: snapshot.appDaily,
+      away: snapshot.isAway
     }) });
   }
 

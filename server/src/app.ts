@@ -24,7 +24,10 @@ export async function buildServer() {
   });
   const db = await initializeDatabase();
   app.decorate("db", db);
-  app.decorate("hub", new RealtimeHub(db));
+  const hub = new RealtimeHub(db);
+  app.decorate("hub", hub);
+  const stalePresenceTimer = setInterval(() => void hub.markStaleAway().catch((error) => app.log.error(error)), 30_000);
+  stalePresenceTimer.unref();
 
   await app.register(cors, {
     origin(origin, callback) {
@@ -58,6 +61,6 @@ export async function buildServer() {
     return reply.code((error as { statusCode?: number }).statusCode ?? 500).send({ error: "Erro interno do servidor" });
   });
 
-  app.addHook("onClose", async () => { await db.end(); });
+  app.addHook("onClose", async () => { clearInterval(stalePresenceTimer); await db.end(); });
   return app;
 }

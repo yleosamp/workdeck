@@ -1,6 +1,6 @@
 [package]
 name = "workdeck"
-version = "0.7.2"
+version = "0.8.0"
 description = "Professional software activity and social presence"
 authors = ["Workdeck"]
 edition = "2021"
@@ -22,3 +22,5 @@ sysinfo = "0.33"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"

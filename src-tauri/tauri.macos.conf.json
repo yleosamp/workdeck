@@ -4,7 +4,8 @@
     "targets": ["app", "dmg"],
     "macOS": {
       "minimumSystemVersion": "10.15",
-      "exceptionDomain": "144.22.135.127"
+      "exceptionDomain": "144.22.135.127",
+      "entitlements": "./Entitlements.plist"
     }
   }
 }

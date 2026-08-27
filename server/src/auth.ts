@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import type { AuthUser, PublicUser } from "./types.js";
+import { utcTimestamp } from "./dates.js";
 
 export type UserRow = RowDataPacket & {
   id: string;
@@ -34,7 +35,7 @@ export function toPublicUser(row: UserRow, includeEmail = false): PublicUser {
     bannerUrl: row.banner_url,
     profileVisibility: row.profile_visibility,
     presenceVisibility: row.presence_visibility,
-    createdAt: row.created_at
+    createdAt: utcTimestamp(row.created_at) ?? new Date(0).toISOString()
   };
 }
 
