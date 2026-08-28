@@ -17,6 +17,7 @@ import {
   Flame,
   FolderOpen,
   Home,
+  Headphones,
   Library,
   Link2,
   ImagePlus,
@@ -96,8 +97,10 @@ function HomeView({ apps, heatmap, friends, userName, onViewChange }: { apps: Tr
   const currentDateLabel = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(now);
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 18 ? "Good afternoon" : "Good evening";
   const running = apps.find((app) => app.status === "running");
-  const today = apps.reduce((sum, app) => sum + app.todaySeconds, 0);
-  const total = apps.reduce((sum, app) => sum + app.totalSeconds, 0);
+  // Focused time is the union of all running-app intervals. Per-app cards keep
+  // their own full counters, but this headline must never double overlapping apps.
+  const today = heatmap.find((day) => day.date === localDateKey())?.seconds ?? heatmap.at(-1)?.seconds ?? 0;
+  const total = heatmap.reduce((sum, day) => sum + day.seconds, 0);
   const activeDays = heatmap.slice(-30).filter((day) => day.seconds > 0).length;
   const priorWeek = heatmap.slice(-14, -7).reduce((sum, day) => sum + day.seconds, 0);
   const thisWeek = heatmap.slice(-7).reduce((sum, day) => sum + day.seconds, 0);
@@ -140,7 +143,7 @@ function HomeView({ apps, heatmap, friends, userName, onViewChange }: { apps: Tr
       <section className="stats-grid">
         <Stat icon={Clock3} label="focused today" value={formatDuration(today, true)} accent="#78e6a4" />
         <Stat icon={Flame} label="day streak" value={`${Math.min(activeDays, 12)} days`} accent="#ffb661" />
-        <Stat icon={Sparkles} label="all-time craft" value={`${Math.floor(total / 3600).toLocaleString()}h`} accent="#a998ff" />
+        <Stat icon={Sparkles} label="focused · 12 months" value={`${Math.floor(total / 3600).toLocaleString()}h`} accent="#a998ff" />
         <Stat icon={Activity} label="vs last week" value={`${percentChange(thisWeek, priorWeek) >= 0 ? "+" : ""}${percentChange(thisWeek, priorWeek)}%`} accent="#79c7ff" />
       </section>
 
@@ -219,7 +222,7 @@ function ActivityView({ apps, heatmap, appDaily, onExport }: { apps: TrackedApp[
   }, [appDaily, heatmap, selectedAppId]);
   const weekly = useMemo(() => visibleHeatmap.slice(-7), [visibleHeatmap]);
   const weekMax = Math.max(...weekly.map((day) => day.seconds), 1);
-  const total = apps.reduce((sum, app) => sum + app.totalSeconds, 0);
+  const focusedTotal = visibleHeatmap.reduce((sum, day) => sum + day.seconds, 0);
   const selectedApp = apps.find((app) => app.id === selectedAppId);
   return (
     <div className="page">
@@ -244,7 +247,7 @@ function ActivityView({ apps, heatmap, appDaily, onExport }: { apps: TrackedApp[
         </div>
       </section>
       <section className="panel breakdown-panel">
-        <SectionTitle title="Time by software" action={<span className="muted-label">{Math.floor((selectedApp?.totalSeconds ?? total) / 3600).toLocaleString()} total hours</span>} />
+        <SectionTitle title="Time by software" action={<span className="muted-label">{Math.floor((selectedApp?.totalSeconds ?? focusedTotal) / 3600).toLocaleString()} {selectedApp ? "app hours" : "focused hours"}</span>} />
         <div className="breakdown-list">
           {[...apps].sort((a, b) => b.totalSeconds - a.totalSeconds).map((app) => (
             <div className="breakdown-row" key={app.id}>
@@ -380,23 +383,23 @@ function FileCard({ file, onAccept, onSave, onOpenImage, onOpenSaved, onRevealSa
 }) {
   return (
     <div className={`file-card ${file.previewKind ? "file-card-previewable" : ""}`}>
-      {file.previewKind === "image" && file.previewUrl && <button className="file-image-preview" onClick={onOpenImage} title="Ampliar imagem"><img src={file.previewUrl} alt={`Preview de ${file.name}`} /><span><ZoomIn size={16} /> Clique para ampliar</span></button>}
+      {file.previewKind === "image" && file.previewUrl && <button type="button" className="file-image-preview" onClick={onOpenImage} title="Ampliar imagem"><img src={file.previewUrl} alt={`Preview de ${file.name}`} /><span><ZoomIn size={16} /> Clique para ampliar</span></button>}
       {file.previewKind === "audio" && file.previewUrl && <div className="file-audio-preview"><audio controls preload="metadata" src={file.previewUrl}>Seu computador não conseguiu reproduzir este formato.</audio></div>}
       <div className="file-card-row">
         <div className="file-icon"><FolderOpen size={22} /></div>
         <div className="file-info"><strong>{file.name}</strong><span>{formatFileSize(file.size)} · P2P, sem upload</span>{file.state === "transferring" && <div className="file-progress"><i style={{ width: `${file.progress}%` }} /></div>}</div>
         {file.state === "offered" && file.direction === "incoming" && onAccept
-          ? <button className="file-accept" onClick={onAccept}><Download size={15} /> Receber</button>
+          ? <button type="button" className="file-accept" onClick={onAccept}><Download size={15} /> Receber</button>
           : onSave && file.receivedBlob && !file.saved
-            ? <button className="file-accept" onClick={onSave}><Download size={15} /> Salvar</button>
+            ? <button type="button" className="file-accept" onClick={onSave} disabled={file.saving}><Download size={15} /> {file.saving ? "Salvando…" : "Salvar"}</button>
             : <span className={`file-state file-state-${file.state}`}>{file.state === "complete" ? <Check size={17} /> : file.state === "offered" ? <Clock3 size={15} /> : `${file.progress}%`}</span>}
       </div>
-      {file.savedPath && <div className="file-saved-actions"><button onClick={onOpenSaved}><ExternalLink size={14} /> Abrir</button><button onClick={onRevealSaved}><FolderOpen size={14} /> Abrir na pasta</button></div>}
+      {file.savedPath && <div className="file-saved-actions"><button type="button" onClick={onOpenSaved}><ExternalLink size={14} /> Abrir</button><button type="button" onClick={onRevealSaved}><FolderOpen size={14} /> Abrir na pasta</button></div>}
     </div>
   );
 }
 
-function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, onInitialAttachmentConsumed, onFriendsChanged, onOpenProfile }: { friends: Friend[]; currentUserId: string; initialFriendId?: string; initialAttachment?: File | null; onInitialAttachmentConsumed?: () => void; onFriendsChanged: () => Promise<void>; onOpenProfile: (friend: Friend) => void }) {
+function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, onInitialAttachmentConsumed, onFriendsChanged, onConversationRead, onOpenProfile }: { friends: Friend[]; currentUserId: string; initialFriendId?: string; initialAttachment?: File | null; onInitialAttachmentConsumed?: () => void; onFriendsChanged: () => Promise<void>; onConversationRead: (userId: string) => void; onOpenProfile: (friend: Friend) => void }) {
   const [selectedId, setSelectedId] = useState(initialFriendId ?? friends[0]?.id ?? "");
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [draft, setDraft] = useState("");
@@ -467,11 +470,16 @@ function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, 
 
   useEffect(() => {
     if (!selectedId) return;
-    social.messages(selectedId).then((history) => {
+    social.messages(selectedId).then(async (history) => {
       setMessages((current) => ({ ...current, [selectedId]: history.map((message) => mapApiMessage(message, currentUserId)) }));
-      for (const message of history) if (message.recipientId === currentUserId && !message.readAt) void social.markRead(message.id);
+      const unread = history.filter((message) => message.recipientId === currentUserId && !message.readAt);
+      if (unread.length) {
+        onConversationRead(selectedId);
+        await Promise.all(unread.map((message) => social.markRead(message.id)));
+        await onFriendsChanged();
+      }
     }).catch((reason) => setError(reason.message));
-  }, [selectedId, currentUserId]);
+  }, [selectedId, currentUserId, onFriendsChanged, onConversationRead]);
 
   useEffect(() => social.subscribe((event) => {
     if (event.type === "message.created") {
@@ -481,7 +489,10 @@ function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, 
         if (existing.some((message) => message.id === event.message.id)) return current;
         return { ...current, [otherId]: [...existing, mapApiMessage(event.message, currentUserId)] };
       });
-      if (event.message.recipientId === currentUserId && otherId === selectedId) void social.markRead(event.message.id);
+      if (event.message.recipientId === currentUserId && otherId === selectedId) {
+        onConversationRead(otherId);
+        void social.markRead(event.message.id).then(onFriendsChanged);
+      }
     }
     if (event.type === "chat.typing" && event.userId === selectedId) setTyping(event.isTyping);
     if (event.type === "webrtc.ready") {
@@ -505,7 +516,7 @@ function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, 
       if (transport) void transport.acceptSignal(event.signal as SignalPayload).catch(() => setError("A conexão P2P falhou"));
       else queuedSignals.current.set(event.transferId, [...(queuedSignals.current.get(event.transferId) ?? []), event.signal as SignalPayload]);
     }
-  }), [currentUserId, selectedId]);
+  }), [currentUserId, selectedId, onConversationRead, onFriendsChanged]);
 
   const updateFile = (messageId: string, update: Partial<NonNullable<Message["file"]>>, conversationId = selectedId) => {
     setMessages((current) => ({ ...current, [conversationId]: (current[conversationId] ?? []).map((item) => item.id === messageId && item.file ? { ...item, file: { ...item.file, ...update } } : item) }));
@@ -591,23 +602,24 @@ function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, 
 
   const acceptFile = async (message: Message) => {
     if (!message.file || !friend) return;
+    const conversationId = friend.id;
     const transferId = message.file.transferId;
     if (!transferId) return;
     const { iceServers } = await social.rtcConfig().catch(() => ({ iceServers: undefined }));
     const transport = new PeerFileTransport(
       (signal) => social.sendRealtime({ type: "webrtc.signal", targetUserId: friend.id, transferId, signal }),
       {
-        onReceiveProgress: ({ transferred, total }) => updateFile(message.id, { state: "transferring", progress: Math.round((transferred / total) * 100) }),
+        onReceiveProgress: ({ transferred, total }) => updateFile(message.id, { state: "transferring", progress: Math.round((transferred / total) * 100) }, conversationId),
         onIncomingFile: async ({ name, mime, blob }) => {
           try {
             const previewKind = previewKindForFile(name, mime);
             const previewUrl = previewKind ? URL.createObjectURL(blob) : undefined;
             if (previewUrl) previewUrls.current.add(previewUrl);
-            updateFile(message.id, { state: "complete", progress: 100, previewKind, previewUrl, receivedBlob: blob, saved: false });
+            updateFile(message.id, { state: "complete", progress: 100, previewKind, previewUrl, receivedBlob: blob, saved: false, saving: true }, conversationId);
             const saved = await saveReceivedFile(name, blob);
-            updateFile(message.id, { saved: saved.saved, savedPath: saved.path });
+            updateFile(message.id, { saved: saved.saved, savedPath: saved.path, saving: false }, conversationId);
           } catch (reason) {
-            updateFile(message.id, { state: "failed", progress: 0 });
+            updateFile(message.id, { state: "failed", progress: 0, saving: false }, conversationId);
             setError(reason instanceof Error ? reason.message : "Não foi possível salvar o arquivo");
           } finally { transport.close(); }
         },
@@ -615,18 +627,20 @@ function ChatView({ friends, currentUserId, initialFriendId, initialAttachment, 
       }
     );
     transports.current.set(transferId, transport);
-    updateFile(message.id, { state: "transferring", progress: 0 });
+    updateFile(message.id, { state: "transferring", progress: 0 }, conversationId);
     for (const signal of queuedSignals.current.get(transferId) ?? []) await transport.acceptSignal(signal);
     queuedSignals.current.delete(transferId);
     social.sendRealtime({ type: "webrtc.ready", targetUserId: friend.id, transferId });
   };
 
   const saveFileAgain = async (message: Message) => {
-    if (!message.file?.receivedBlob) return;
+    if (!message.file?.receivedBlob || !friend) return;
+    const conversationId = friend.id;
+    updateFile(message.id, { saving: true }, conversationId);
     try {
       const saved = await saveReceivedFile(message.file.name, message.file.receivedBlob);
-      if (saved.saved) updateFile(message.id, { saved: true, savedPath: saved.path });
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível salvar o arquivo"); }
+      updateFile(message.id, { saved: saved.saved, savedPath: saved.path, saving: false }, conversationId);
+    } catch (reason) { updateFile(message.id, { saving: false }, conversationId); setError(reason instanceof Error ? reason.message : "Não foi possível salvar o arquivo"); }
   };
 
   const runSavedFileAction = async (action: "open" | "reveal", path?: string) => {
@@ -760,7 +774,7 @@ function ProfileEditor({ user, onClose, onSaved }: { user: SocialUser; onClose: 
 
 function ProfileView({ apps, heatmap, user, friendCount, onCopy, onUserChanged }: { apps: TrackedApp[]; heatmap: HeatmapDay[]; user: SocialUser; friendCount: number; onCopy: () => void; onUserChanged: (user: SocialUser) => void }) {
   const [editing, setEditing] = useState(false);
-  const total = apps.reduce((sum, app) => sum + app.totalSeconds, 0);
+  const total = heatmap.reduce((sum, day) => sum + day.seconds, 0);
   const running = apps.find((app) => app.status === "running");
   const initials = user.displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   return (
@@ -796,7 +810,7 @@ function FriendProfileView({ data, onBack }: { data: ApiProfile; onBack: () => v
   const { profile, presence } = data;
   const initials = profile.displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   const year = useMemo(() => fullYearDays(data.daily), [data.daily]);
-  const total = data.totals.reduce((sum, app) => sum + Number(app.totalSeconds), 0);
+  const total = data.daily.reduce((sum, day) => sum + Number(day.seconds), 0);
   const recent = [...data.totals].filter((app) => app.lastOpenedAt).sort((a, b) => new Date(b.lastOpenedAt!).getTime() - new Date(a.lastOpenedAt!).getTime()).slice(0, 5);
   const workingNow = presence?.status !== "offline" && presence?.currentAppName;
   return (
@@ -818,7 +832,7 @@ function FriendProfileView({ data, onBack }: { data: ApiProfile; onBack: () => v
   );
 }
 
-function SettingsView({ user, testFriend, onUserChanged, onLogout, onSwitchAccount, onExport }: { user: SocialUser; testFriend?: Friend; onUserChanged: (user: SocialUser) => void; onLogout: () => void; onSwitchAccount: () => void; onExport: () => void }) {
+function SettingsView({ user, testFriend, uiScale, onUiScale, onUserChanged, onLogout, onSwitchAccount, onExport }: { user: SocialUser; testFriend?: Friend; uiScale: number; onUiScale: (scale: number) => void; onUserChanged: (user: SocialUser) => void; onLogout: () => void; onSwitchAccount: () => void; onExport: () => void }) {
   const [publicProfile, setPublicProfile] = useState(user.profileVisibility === "public");
   const [presenceVisibility, setPresenceVisibility] = useState(user.presenceVisibility);
   const [notifications, setNotifications] = useState(localStorage.getItem("workdeck.notifications") !== "false");
@@ -842,6 +856,10 @@ function SettingsView({ user, testFriend, onUserChanged, onLogout, onSwitchAccou
   return (
     <div className="page settings-page">
       <div className="page-heading"><div><span className="eyebrow">Your preferences</span><h1>Settings</h1><p>Control tracking, privacy, and notifications.</p></div></div>
+      <section className="panel settings-panel">
+        <SectionTitle title="Interface" />
+        <div className="setting-row ui-scale-setting"><div><strong>Escala do aplicativo</strong><p>Aumente textos e controles em monitores ultrawide ou de alta resolução.</p></div><label><input type="range" min="80" max="150" step="5" value={uiScale} onChange={(event) => onUiScale(Number(event.target.value))} /><span>{uiScale}%</span></label></div>
+      </section>
       <section className="panel settings-panel">
         <SectionTitle title="Privacy & presence" />
         <SettingRow title="Public profile" description="Anyone with your profile link can see your hours and recent software." value={publicProfile} onChange={(value) => { setPublicProfile(value); void updatePrivacy("profileVisibility", value); }} />
@@ -926,6 +944,8 @@ function WorkdeckApp() {
   const [pendingChatAttachment, setPendingChatAttachment] = useState<File | null>(null);
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
   const [studioChatContacts, setStudioChatContacts] = useState<Friend[]>([]);
+  const [uiScale, setUiScale] = useState(() => Math.min(150, Math.max(80, Number(localStorage.getItem("workdeck.ui-scale")) || 100)));
+  const [activeCall, setActiveCall] = useState<{ communityName: string; channelName: string } | null>(null);
   const previousRunning = useRef<string[]>([]);
   const activitySyncFailed = useRef(false);
   const apiFriendsRef = useRef<ApiFriend[]>([]);
@@ -935,6 +955,16 @@ function WorkdeckApp() {
   const initials = currentUser?.displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() ?? "WD";
 
   useEffect(() => { apiFriendsRef.current = apiFriends; }, [apiFriends]);
+
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (!root) return;
+    const ratio = uiScale / 100;
+    root.style.setProperty("zoom", String(ratio));
+    root.style.width = `${100 / ratio}%`;
+    root.style.height = `${100 / ratio}%`;
+    localStorage.setItem("workdeck.ui-scale", String(uiScale));
+  }, [uiScale]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -993,6 +1023,9 @@ function WorkdeckApp() {
     const [nextFriends, nextRequests] = await Promise.all([social.friends(), social.requests()]);
     setApiFriends(nextFriends);
     setFriendRequests(nextRequests);
+  }, []);
+  const markConversationLocallyRead = useCallback((userId: string) => {
+    setApiFriends((current) => current.map((friend) => friend.id === userId ? { ...friend, unreadCount: 0 } : friend));
   }, []);
 
   useEffect(() => {
@@ -1165,7 +1198,7 @@ function WorkdeckApp() {
           <button className="mobile-menu icon-button" onClick={() => setMobileNav(true)}><Menu size={20} /></button>
           <label className="global-search"><Search size={17} /><input placeholder="Search software, friends, activity..." /><kbd>⌘ K</kbd></label>
           <div className="top-actions">
-            <button className="icon-button notification-button" onClick={() => setShowNotifications(!showNotifications)}><Bell size={19} /><i /></button>
+            <button className="icon-button notification-button" onClick={() => setShowNotifications(!showNotifications)}><Bell size={19} />{friendRequests.incoming.length > 0 && <i />}</button>
             <button className="friend-toggle" onClick={() => setFriendPanel(!friendPanel)}><Users size={17} /><span>{friends.filter((friend) => friend.status !== "offline").length} online</span></button>
           </div>
           {showNotifications && <div className="notification-popover"><div><strong>Notifications</strong><button onClick={() => setShowNotifications(false)}><X size={15} /></button></div>{friendRequests.incoming.map((request) => <article key={request.id} onClick={() => setShowFriendManager(true)}><span className="notice-icon"><UserPlus size={16} /></span><p><strong>{request.user.displayName} wants to be friends</strong><span>@{request.user.handle}</span></p></article>)}{!friendRequests.incoming.length && <div className="empty-notifications">You're all caught up.</div>}</div>}
@@ -1176,11 +1209,11 @@ function WorkdeckApp() {
           {view === "library" && <LibraryView apps={apps} onAdd={() => setShowAdd(true)} />}
           {view === "activity" && <ActivityView apps={apps} heatmap={heatmap} appDaily={appDaily} onExport={exportActivity} />}
           {view === "leaderboard" && <LeaderboardView onOpenChat={(userId) => { setSelectedFriendId(userId); setCurrentView("chat"); }} />}
-          {view === "studios" && <StudiosView currentUser={currentUser} friends={apiFriends} pendingInviteCode={pendingInviteCode} onInviteHandled={() => setPendingInviteCode(null)} onOpenDm={openDirectMessage} onToast={setToast} />}
-          {view === "chat" && <ChatView friends={chatFriends} currentUserId={currentUser.id} initialFriendId={selectedFriendId} initialAttachment={pendingChatAttachment} onInitialAttachmentConsumed={() => setPendingChatAttachment(null)} onFriendsChanged={refreshSocial} onOpenProfile={(friend) => void openFriendProfile(friend)} />}
+          <div className={`studio-host ${view === "studios" ? "" : "studio-host-hidden"}`} aria-hidden={view !== "studios"}><StudiosView currentUser={currentUser} friends={apiFriends} pendingInviteCode={pendingInviteCode} onInviteHandled={() => setPendingInviteCode(null)} onOpenDm={openDirectMessage} onToast={setToast} onCallStateChange={setActiveCall} /></div>
+          {view === "chat" && <ChatView friends={chatFriends} currentUserId={currentUser.id} initialFriendId={selectedFriendId} initialAttachment={pendingChatAttachment} onInitialAttachmentConsumed={() => setPendingChatAttachment(null)} onFriendsChanged={refreshSocial} onConversationRead={markConversationLocallyRead} onOpenProfile={(friend) => void openFriendProfile(friend)} />}
           {view === "friend-profile" && viewedProfile && <FriendProfileView data={viewedProfile} onBack={() => setCurrentView("chat")} />}
           {view === "profile" && <ProfileView apps={apps} heatmap={heatmap} user={currentUser} friendCount={friends.length} onCopy={copyProfile} onUserChanged={setCurrentUser} />}
-          {view === "settings" && <SettingsView user={currentUser} testFriend={friends[0]} onUserChanged={setCurrentUser} onLogout={() => void logout()} onSwitchAccount={switchAccount} onExport={exportActivity} />}
+          {view === "settings" && <SettingsView user={currentUser} testFriend={friends[0]} uiScale={uiScale} onUiScale={setUiScale} onUserChanged={setCurrentUser} onLogout={() => void logout()} onSwitchAccount={switchAccount} onExport={exportActivity} />}
         </main>
       </div>
 
@@ -1197,6 +1230,7 @@ function WorkdeckApp() {
 
       {showAdd && <AddSoftwareModal onClose={() => setShowAdd(false)} onSaved={(app) => { setApps((current) => [...current, app]); setToast(`${app.name} added to your library`); }} />}
       {showFriendManager && <FriendManager incoming={friendRequests.incoming} outgoing={friendRequests.outgoing} onClose={() => setShowFriendManager(false)} onChanged={refreshSocial} />}
+      {activeCall && view !== "studios" && <button className="active-call-pill" onClick={() => setCurrentView("studios")}><span><Headphones size={17} /></span><div><strong>Call em andamento</strong><small>{activeCall.communityName} · {activeCall.channelName}</small></div><Radio size={15} /></button>}
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
   );

@@ -135,7 +135,9 @@ const migrations = [
     id CHAR(36) PRIMARY KEY,
     channel_id CHAR(36) NOT NULL,
     sender_id CHAR(36) NOT NULL,
-    body TEXT NOT NULL,
+    body TEXT NULL,
+    message_type ENUM('text','file') NOT NULL DEFAULT 'text',
+    file_metadata JSON NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     CONSTRAINT fk_community_messages_channel FOREIGN KEY (channel_id) REFERENCES community_channels(id) ON DELETE CASCADE,
     CONSTRAINT fk_community_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -194,5 +196,10 @@ export async function initializeDatabase(): Promise<Pool> {
   }
   await pool.query("ALTER TABLE users MODIFY presence_visibility ENUM('public','friends','private') NOT NULL DEFAULT 'public'");
   if (upgradedExistingProfiles) await pool.query("UPDATE users SET presence_visibility='public' WHERE presence_visibility='friends'");
+  const [communityMessageType] = await pool.query<Array<{ Field: string }> & RowDataPacket[]>("SHOW COLUMNS FROM community_messages LIKE 'message_type'");
+  await pool.query("ALTER TABLE community_messages MODIFY body TEXT NULL");
+  if (!communityMessageType.length) await pool.query("ALTER TABLE community_messages ADD COLUMN message_type ENUM('text','file') NOT NULL DEFAULT 'text' AFTER body");
+  const [communityFileMetadata] = await pool.query<Array<{ Field: string }> & RowDataPacket[]>("SHOW COLUMNS FROM community_messages LIKE 'file_metadata'");
+  if (!communityFileMetadata.length) await pool.query("ALTER TABLE community_messages ADD COLUMN file_metadata JSON NULL AFTER message_type");
   return pool;
 }

@@ -62,6 +62,7 @@ export interface TransferFile {
   receivedBlob?: Blob;
   saved?: boolean;
   savedPath?: string;
+  saving?: boolean;
 }
 
 export interface ActivitySnapshot {

@@ -59,6 +59,13 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
         );
       }
       await connection.execute("DELETE FROM activity_daily WHERE user_id=? AND app_id='all-apps'", [request.user.sub]);
+      for (const day of body.heatmap) {
+        await connection.execute(
+          `INSERT INTO activity_daily (user_id,activity_date,app_id,app_name,seconds) VALUES (?,?,'all-apps','Tempo focado',?)
+           ON DUPLICATE KEY UPDATE app_name=VALUES(app_name),seconds=VALUES(seconds)`,
+          [request.user.sub, day.date, day.seconds]
+        );
+      }
       for (const day of body.daily) {
         const trackedApp = body.apps.find((item) => item.id === day.appId);
         if (!trackedApp) continue;
@@ -96,9 +103,9 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       app.db.query<Array<{ appId: string; appName: string; totalSeconds: number; lastOpenedAt: string | null }> & RowDataPacket[]>(
         "SELECT app_id AS appId,app_name AS appName,total_seconds AS totalSeconds,last_opened_at AS lastOpenedAt FROM activity_totals WHERE user_id=? ORDER BY total_seconds DESC", [request.user.sub]),
       app.db.query<Array<{ date: string; seconds: number }> & RowDataPacket[]>(
-        "SELECT activity_date AS date,SUM(seconds) AS seconds FROM activity_daily WHERE user_id=? GROUP BY activity_date ORDER BY activity_date", [request.user.sub]),
+        "SELECT activity_date AS date,seconds FROM activity_daily WHERE user_id=? AND app_id='all-apps' ORDER BY activity_date", [request.user.sub]),
       app.db.query<Array<{ date: string; appId: string; appName: string; seconds: number }> & RowDataPacket[]>(
-        "SELECT activity_date AS date,app_id AS appId,app_name AS appName,seconds FROM activity_daily WHERE user_id=? ORDER BY activity_date,app_id", [request.user.sub])
+        "SELECT activity_date AS date,app_id AS appId,app_name AS appName,seconds FROM activity_daily WHERE user_id=? AND app_id<>'all-apps' ORDER BY activity_date,app_id", [request.user.sub])
     ]);
     return { totals: totals.map((item) => ({ ...item, lastOpenedAt: utcTimestamp(item.lastOpenedAt) })), daily, dailyByApp };
   });
@@ -118,7 +125,7 @@ export const activityRoutes: FastifyPluginAsync = async (app) => {
       seconds: number;
     }> & RowDataPacket[]>(
       `SELECT u.id,u.handle,u.display_name AS displayName,u.avatar_color AS avatarColor,u.avatar_url AS avatarUrl,
-        COALESCE(SUM(CASE WHEN ad.app_id<>'all-apps' THEN ad.seconds ELSE 0 END),0) AS seconds
+        COALESCE(SUM(CASE WHEN ad.app_id='all-apps' THEN ad.seconds ELSE 0 END),0) AS seconds
        FROM (
          SELECT ? AS user_id
          UNION

@@ -6,6 +6,7 @@ use sysinfo::System;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    window::Color,
     AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_updater::UpdaterExt;
@@ -93,7 +94,13 @@ fn initialize_database(connection: &Connection) -> rusqlite::Result<()> {
            seconds INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY (date, app_id)
          );
-         CREATE INDEX IF NOT EXISTS idx_daily_activity_date ON daily_activity(date);"
+         CREATE INDEX IF NOT EXISTS idx_daily_activity_date ON daily_activity(date);
+         CREATE TABLE IF NOT EXISTS focused_daily (
+           date TEXT PRIMARY KEY,
+           seconds INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT OR IGNORE INTO focused_daily (date, seconds)
+           SELECT date, MAX(seconds) FROM daily_activity GROUP BY date;"
     )?;
 
     let builtins = [
@@ -224,6 +231,13 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
 
     if !is_away && elapsed_seconds > 0 && !running_ids.is_empty() {
         let transaction = connection.transaction().map_err(|error| error.to_string())?;
+        // Per-app totals keep every running app. Focused time stores the union
+        // of those intervals, so simultaneous apps add this slice only once.
+        transaction.execute(
+            "INSERT INTO focused_daily (date, seconds) VALUES (?1, ?2)
+             ON CONFLICT(date) DO UPDATE SET seconds = seconds + excluded.seconds",
+            params![today, elapsed_seconds],
+        ).map_err(|error| error.to_string())?;
         for id in &running_ids {
             transaction.execute(
                 "INSERT INTO daily_activity (date, app_id, seconds) VALUES (?1, ?2, ?3)
@@ -274,7 +288,7 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         let date = (start_date + Duration::days(offset)).format("%Y-%m-%d").to_string();
         let seconds = connection
             .query_row(
-                "SELECT COALESCE(SUM(seconds), 0) FROM daily_activity WHERE date = ?1",
+                "SELECT seconds FROM focused_daily WHERE date = ?1",
                 params![date],
                 |row| row.get(0),
             )
@@ -464,6 +478,7 @@ fn open_stream_popout(app: AppHandle, session_id: String, title: String) -> Resu
         .always_on_top(true)
         .resizable(true)
         .decorations(true)
+        .background_color(Color(6, 8, 10, 255))
         .build()
         .map_err(|error| error.to_string())?;
     Ok(())

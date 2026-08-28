@@ -77,7 +77,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       app.db.query<Array<{ appId: string; appName: string; totalSeconds: number; lastOpenedAt: string | null }> & RowDataPacket[]>(
         "SELECT app_id AS appId, app_name AS appName, total_seconds AS totalSeconds, last_opened_at AS lastOpenedAt FROM activity_totals WHERE user_id=? ORDER BY total_seconds DESC", [profile.id]),
       app.db.query<Array<{ date: string; seconds: number }> & RowDataPacket[]>(
-        "SELECT activity_date AS date, SUM(seconds) AS seconds FROM activity_daily WHERE user_id=? AND activity_date>=DATE_SUB(UTC_DATE(),INTERVAL 363 DAY) GROUP BY activity_date ORDER BY activity_date", [profile.id]),
+        "SELECT activity_date AS date,seconds FROM activity_daily WHERE user_id=? AND app_id='all-apps' AND activity_date>=DATE_SUB(UTC_DATE(),INTERVAL 363 DAY) ORDER BY activity_date", [profile.id]),
       app.db.query<Array<{ status: string; currentAppId: string | null; currentAppName: string | null; sessionStartedAt: string | null; updatedAt: string }> & RowDataPacket[]>(
         "SELECT status,current_app_id AS currentAppId,current_app_name AS currentAppName,session_started_at AS sessionStartedAt,updated_at AS updatedAt FROM presence WHERE user_id=?", [profile.id])
     ]);
@@ -105,7 +105,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     const [[totals], [recent], [daily], [presence]] = await Promise.all([
       app.db.query<Array<{ appName: string; totalSeconds: number }> & RowDataPacket[]>("SELECT app_name AS appName,total_seconds AS totalSeconds FROM activity_totals WHERE user_id=? ORDER BY total_seconds DESC LIMIT 8", [profile.id]),
       app.db.query<Array<{ appName: string; lastOpenedAt: string }> & RowDataPacket[]>("SELECT app_name AS appName,last_opened_at AS lastOpenedAt FROM activity_totals WHERE user_id=? AND last_opened_at IS NOT NULL ORDER BY last_opened_at DESC LIMIT 5", [profile.id]),
-      app.db.query<Array<{ date: string; seconds: number }> & RowDataPacket[]>("SELECT activity_date AS date,SUM(seconds) AS seconds FROM activity_daily WHERE user_id=? AND activity_date>=DATE_SUB(UTC_DATE(),INTERVAL 363 DAY) GROUP BY activity_date ORDER BY activity_date", [profile.id]),
+      app.db.query<Array<{ date: string; seconds: number }> & RowDataPacket[]>("SELECT activity_date AS date,seconds FROM activity_daily WHERE user_id=? AND app_id='all-apps' AND activity_date>=DATE_SUB(UTC_DATE(),INTERVAL 363 DAY) ORDER BY activity_date", [profile.id]),
       app.db.query<Array<{ status: string; currentAppName: string | null }> & RowDataPacket[]>("SELECT status,current_app_name AS currentAppName FROM presence WHERE user_id=?", [profile.id])
     ]);
     const activity = new Map(daily.map((day) => [String(day.date).slice(0, 10), Number(day.seconds)]));

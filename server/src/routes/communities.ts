@@ -6,6 +6,21 @@ import { areFriends, toPublicUser, type UserRow } from "../auth.js";
 import { config } from "../config.js";
 import { utcTimestamp } from "../dates.js";
 
+const communityFileSchema = z.object({
+  name: z.string().min(1).max(255),
+  size: z.number().int().nonnegative().max(20 * 1024 * 1024 * 1024),
+  mime: z.string().max(160).default("application/octet-stream"),
+  transferId: z.string().uuid()
+});
+
+function parseCommunityFile(value: unknown) {
+  if (!value) return null;
+  if (typeof value === "string") {
+    try { return JSON.parse(value) as Record<string, unknown>; } catch { return null; }
+  }
+  return value as Record<string, unknown>;
+}
+
 type CommunityRow = RowDataPacket & {
   id: string;
   owner_id: string;
@@ -314,24 +329,29 @@ export const communityRoutes: FastifyPluginAsync = async (app) => {
     const beforeSql = before ? "AND m.created_at<?" : "";
     if (before) params.push(new Date(before));
     params.push(limit);
-    const [rows] = await app.db.query<Array<RowDataPacket & UserRow & { message_id: string; sender_id: string; body: string; message_created_at: string }>>(
-      `SELECT m.id AS message_id,m.sender_id,m.body,m.created_at AS message_created_at,u.*
+    const [rows] = await app.db.query<Array<RowDataPacket & UserRow & { message_id: string; sender_id: string; body: string | null; message_type: "text" | "file"; file_metadata: unknown; message_created_at: string }>>(
+      `SELECT m.id AS message_id,m.sender_id,m.body,m.message_type,m.file_metadata,m.created_at AS message_created_at,u.*
        FROM community_messages m JOIN users u ON u.id=m.sender_id
        WHERE m.channel_id=? ${beforeSql} ORDER BY m.created_at DESC LIMIT ?`,
       params
     );
-    return { messages: rows.reverse().map((row) => ({ id: row.message_id, channelId, senderId: row.sender_id, body: row.body, createdAt: utcTimestamp(row.message_created_at)!, author: toPublicUser(row) })) };
+    return { messages: rows.reverse().map((row) => ({ id: row.message_id, channelId, senderId: row.sender_id, body: row.body, type: row.message_type, file: parseCommunityFile(row.file_metadata), createdAt: utcTimestamp(row.message_created_at)!, author: toPublicUser(row) })) };
   });
 
   app.post("/community-channels/:channelId/messages", { preHandler: app.authenticate }, async (request, reply) => {
     const { channelId } = z.object({ channelId: z.string().uuid() }).parse(request.params);
-    const { body } = z.object({ body: z.string().trim().min(1).max(10_000) }).parse(request.body);
+    const payload = z.object({ body: z.string().trim().min(1).max(10_000).optional(), file: communityFileSchema.optional() })
+      .refine((value) => value.body || value.file, "Mensagem vazia")
+      .parse(request.body);
     const channel = await channelAccess(app, channelId, request.user.sub);
     if (!channel) return reply.code(403).send({ error: "Canal indisponível" });
     const id = randomUUID();
-    await app.db.execute("INSERT INTO community_messages (id,channel_id,sender_id,body) VALUES (?,?,?,?)", [id, channelId, request.user.sub, body]);
+    await app.db.execute(
+      "INSERT INTO community_messages (id,channel_id,sender_id,body,message_type,file_metadata) VALUES (?,?,?,?,?,?)",
+      [id, channelId, request.user.sub, payload.body ?? null, payload.file ? "file" : "text", payload.file ? JSON.stringify(payload.file) : null]
+    );
     const [users] = await app.db.query<UserRow[]>("SELECT * FROM users WHERE id=? LIMIT 1", [request.user.sub]);
-    const message = { id, channelId, senderId: request.user.sub, body, createdAt: new Date().toISOString(), author: toPublicUser(users[0]) };
+    const message = { id, channelId, senderId: request.user.sub, body: payload.body ?? null, type: payload.file ? "file" as const : "text" as const, file: payload.file ?? null, createdAt: new Date().toISOString(), author: toPublicUser(users[0]) };
     await app.hub.sendToCommunity(channel.community_id, { type: "community.message", communityId: channel.community_id, message });
     return reply.code(201).send({ message });
   });

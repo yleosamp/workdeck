@@ -23,6 +23,7 @@ type VoiceManagerOptions = {
   currentUserId: string;
   channelId: string;
   audioProcessing: AudioProcessingSettings;
+  audioDeviceId?: string;
   onRemoteMedia: (media: RemoteMedia) => void;
   onLocalMedia: (kind: CallMediaKind, stream: MediaStream | null) => void;
   onPing: (milliseconds: number | null) => void;
@@ -57,11 +58,7 @@ export class VoiceCallManager {
     this.iceServers = (await social.rtcConfig().catch(() => null))?.iceServers ?? this.iceServers;
     try {
       const microphone = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: this.options.audioProcessing.echoCancellation,
-          noiseSuppression: this.options.audioProcessing.noiseSuppression,
-          autoGainControl: this.options.audioProcessing.autoGainControl
-        },
+        audio: this.microphoneConstraints(this.options.audioDeviceId),
         video: false
       });
       this.setLocalStream("microphone", microphone);
@@ -124,6 +121,20 @@ export class VoiceCallManager {
 
   isMuted() {
     return this.muted;
+  }
+
+  async setMicrophone(deviceId?: string) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: this.microphoneConstraints(deviceId),
+        video: false
+      });
+      for (const track of stream.getAudioTracks()) track.enabled = !this.muted;
+      this.options.audioDeviceId = deviceId;
+      this.setLocalStream("microphone", stream);
+    } catch (error) {
+      throw new Error(errorMessage(error, "Não foi possível trocar o microfone"));
+    }
   }
 
   async setCamera(enabled: boolean) {
@@ -213,6 +224,15 @@ export class VoiceCallManager {
     for (const peer of this.peers.values()) {
       for (const track of stream.getTracks()) peer.connection.addTrack(track, stream);
     }
+  }
+
+  private microphoneConstraints(deviceId?: string): MediaTrackConstraints {
+    return {
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      echoCancellation: this.options.audioProcessing.echoCancellation,
+      noiseSuppression: this.options.audioProcessing.noiseSuppression,
+      autoGainControl: this.options.audioProcessing.autoGainControl
+    };
   }
 
   private removeLocalStream(kind: CallMediaKind, announce = true) {

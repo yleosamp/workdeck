@@ -88,15 +88,19 @@ describe.sequential("Workdeck API", () => {
     const synced = await app.inject({ method: "POST", url: "/activity/sync", headers: auth(firstToken), payload: {
       apps: [
         { id: "blender", name: "Blender", totalSeconds: 7200, todaySeconds: 1800, lastOpened: null, status: "running" },
-        { id: "photoshop", name: "Photoshop", totalSeconds: 0, todaySeconds: 0, lastOpened: "Never opened", status: "idle" }
+        { id: "photoshop", name: "Photoshop", totalSeconds: 3600, todaySeconds: 1200, lastOpened: null, status: "running" }
       ],
       heatmap: [{ date: new Date().toISOString().slice(0, 10), seconds: 1800 }],
-      daily: [{ date: new Date().toISOString().slice(0, 10), appId: "blender", seconds: 1800 }]
+      daily: [
+        { date: new Date().toISOString().slice(0, 10), appId: "blender", seconds: 1800 },
+        { date: new Date().toISOString().slice(0, 10), appId: "photoshop", seconds: 1200 }
+      ]
     } });
     expect(synced.statusCode).toBe(200);
     const activity = await app.inject({ method: "GET", url: "/activity", headers: auth(firstToken) });
     expect(activity.json().dailyByApp[0].appId).toBe("blender");
     expect(Number(activity.json().dailyByApp[0].seconds)).toBe(1800);
+    expect(Number(activity.json().daily[0].seconds)).toBe(1800);
     const profile = await app.inject({ method: "GET", url: `/profiles/${firstHandle}`, headers: auth(secondToken) });
     expect(Number(profile.json().totals[0].totalSeconds)).toBe(7200);
     expect(profile.json().presence.currentAppName).toBe("Blender");
@@ -144,6 +148,10 @@ describe.sequential("Workdeck API", () => {
     expect(sent.statusCode).toBe(201);
     const history = await app.inject({ method: "GET", url: `/community-channels/${textChannelId}/messages`, headers: auth(firstToken) });
     expect(history.json().messages[0]).toMatchObject({ body: "Review pronta para o time", senderId: secondId });
+    const transferId = randomUUID();
+    const fileMessage = await app.inject({ method: "POST", url: `/community-channels/${textChannelId}/messages`, headers: auth(firstToken), payload: { file: { name: "preview.wav", size: 2048, mime: "audio/wav", transferId } } });
+    expect(fileMessage.statusCode).toBe(201);
+    expect(fileMessage.json().message).toMatchObject({ type: "file", file: { name: "preview.wav", transferId } });
     const list = await app.inject({ method: "GET", url: "/communities", headers: auth(secondToken) });
     expect(list.json().communities[0].members).toHaveLength(2);
     const rtc = await app.inject({ method: "GET", url: "/rtc/config", headers: auth(firstToken) });

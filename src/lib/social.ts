@@ -126,7 +126,9 @@ export type CommunityMessage = {
   id: string;
   channelId: string;
   senderId: string;
-  body: string;
+  body: string | null;
+  type: "text" | "file";
+  file: { name: string; size: number; mime: string; transferId: string } | null;
   createdAt: string;
   author: SocialUser;
 };
@@ -272,8 +274,8 @@ class SocialClient {
   async communityInvite(code: string) { return this.request<{ invite: CommunityInvite; alreadyMember: boolean }>(`/community-invites/${encodeURIComponent(code)}`); }
   async acceptCommunityInvite(code: string) { return this.request<{ accepted: boolean; communityId: string }>(`/community-invites/${encodeURIComponent(code)}/accept`, { method: "POST" }); }
   async communityMessages(channelId: string) { return (await this.request<{ messages: CommunityMessage[] }>(`/community-channels/${channelId}/messages`)).messages; }
-  async sendCommunityMessage(channelId: string, body: string) {
-    return (await this.request<{ message: CommunityMessage }>(`/community-channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ body }) })).message;
+  async sendCommunityMessage(channelId: string, input: { body?: string; file?: { name: string; size: number; mime: string; transferId: string } }) {
+    return (await this.request<{ message: CommunityMessage }>(`/community-channels/${channelId}/messages`, { method: "POST", body: JSON.stringify(input) })).message;
   }
   async rtcConfig() { return this.request<{ iceServers: RTCIceServer[]; expiresIn: number }>("/rtc/config"); }
   async syncActivity(snapshot: ActivitySnapshot) {

@@ -7,6 +7,8 @@ export async function openStreamPopout(stream: MediaStream, title: string) {
   const channelName = `workdeck-stream-${sessionId}`;
   const channel = new BroadcastChannel(channelName);
   const peer = new RTCPeerConnection();
+  const pendingIce: RTCIceCandidateInit[] = [];
+  let offerStarted = false;
   localRelays.set(sessionId, { channel, peer });
   for (const track of stream.getTracks()) peer.addTrack(track, stream);
   peer.onicecandidate = ({ candidate }) => {
@@ -14,12 +16,16 @@ export async function openStreamPopout(stream: MediaStream, title: string) {
   };
   channel.onmessage = async ({ data }) => {
     if (data?.type === "ready") {
+      if (offerStarted) return;
+      offerStarted = true;
       await peer.setLocalDescription(await peer.createOffer());
       channel.postMessage({ type: "offer", description: peer.localDescription });
     } else if (data?.type === "answer") {
       await peer.setRemoteDescription(data.description);
+      for (const candidate of pendingIce.splice(0)) await peer.addIceCandidate(candidate).catch(() => undefined);
     } else if (data?.type === "candidate") {
-      await peer.addIceCandidate(data.candidate).catch(() => undefined);
+      if (peer.remoteDescription) await peer.addIceCandidate(data.candidate).catch(() => undefined);
+      else pendingIce.push(data.candidate);
     } else if (data?.type === "close") {
       peer.close();
       channel.close();
