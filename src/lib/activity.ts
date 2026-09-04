@@ -12,6 +12,7 @@ type NativeApp = {
   today_seconds: number;
   last_opened: string | null;
   is_running: boolean;
+  session_started_at: number | null;
 };
 
 type NativeSnapshot = {
@@ -61,6 +62,7 @@ function normalize(native: NativeSnapshot): ActivitySnapshot {
       todaySeconds: app.today_seconds,
       lastOpened: app.is_running ? "Active now" : app.last_opened ?? "Never opened",
       status: app.is_running ? "running" : "idle",
+      sessionStartedAt: app.session_started_at ?? undefined,
       processNames: app.process_names
     }))
   };

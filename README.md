@@ -11,6 +11,7 @@ O Workdeck é uma “Steam para softwares profissionais”: acompanha o tempo ga
 - Biblioteca de programas e adição por nome do processo, como `Resolve.exe`
 - Pedidos de amizade, aceitar, recusar, remover, bloquear e desbloquear
 - Status online/offline, software aberto e notificação em tempo real
+- Discord Rich Presence opcional, com controles separados para software atual, tempo da sessão, horas totais e ícone do aplicativo
 - Chat persistente, mensagens offline, não lidas e confirmação de leitura
 - Envio de arquivos entre amigos por WebRTC P2P, com aceite e progresso
 - Preview de imagens e player de áudio diretamente no chat após o recebimento P2P
@@ -53,7 +54,7 @@ O instalador público vem configurado para `http://144.22.135.127:8787`. A opç�
 
 A VPS usa um relay TURN opcional para chamadas e arquivos em redes restritivas. As portas públicas são `3478/tcp`, `3478/udp` e `49160-49200/tcp+udp`; o segredo fica somente no `.env` da VPS.
 
-O passo a passo completo está em [Backend local e VPS](docs/backend-e-vps.md). Para publicar novas versões e gerar os aplicativos de Mac, veja [Atualizações automáticas e macOS](docs/atualizacoes-e-macos.md). A organização interna está em [Arquitetura](docs/architecture.md).
+O passo a passo completo está em [Backend local e VPS](docs/backend-e-vps.md). Para publicar novas versões e gerar os aplicativos de Mac, veja [Atualizações automáticas e macOS](docs/atualizacoes-e-macos.md). A configuração oficial do Discord está em [Discord Rich Presence](docs/discord-rich-presence.md). A organização interna está em [Arquitetura](docs/architecture.md).
 
 ## Testar sozinho com duas contas
 
@@ -64,6 +65,8 @@ O passo a passo completo está em [Backend local e VPS](docs/backend-e-vps.md). 
 5. Use **Friends → Solicitações** para aceitar o pedido.
 
 Em **Settings**, o botão **Test P2P on this PC** faz uma transferência real entre dois pares WebRTC locais e confirma se o recurso funciona no computador. **Testar aviso estilo Steam** mostra o novo cartão de atividade no canto da tela.
+
+O **Discord Rich Presence** funciona pelo aplicativo desktop do Discord instalado na mesma máquina. Ele continua ativo com o Workdeck na bandeja e pode ser desligado por completo ou limitar separadamente o nome do software, cronômetro da sessão, tempo total e ícone. Para builds oficiais, configure a variável `WORKDECK_DISCORD_CLIENT_ID` no GitHub com o Application ID público do aplicativo Workdeck criado no Discord Developer Portal.
 
 ## Executar pelo código-fonte
 

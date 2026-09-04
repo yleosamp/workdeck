@@ -13,6 +13,7 @@ export interface TrackedApp {
   todaySeconds: number;
   lastOpened: string;
   status: AppStatus;
+  sessionStartedAt?: number;
   processNames?: string[];
 }
 

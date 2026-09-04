@@ -1,7 +1,14 @@
 use chrono::{Duration, Local};
+use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use rusqlite::{params, Connection};
-use serde::Serialize;
-use std::{collections::HashSet, fs, sync::Mutex, thread, time::{Duration as StdDuration, Instant}};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+    time::{Duration as StdDuration, Instant},
+};
 use sysinfo::System;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -9,13 +16,16 @@ use tauri::{
     window::Color,
     AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
 };
-use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_updater::UpdaterExt;
 
 struct Tracker {
     database: Mutex<Connection>,
     last_sync: Mutex<Instant>,
     last_sleep_gap: Mutex<Option<Instant>>,
+    running_since: Mutex<HashMap<String, i64>>,
+    discord_settings: Mutex<DiscordPresenceSettings>,
+    discord: DiscordPresenceBridge,
 }
 
 #[derive(Serialize)]
@@ -29,6 +39,7 @@ struct TrackedApp {
     today_seconds: i64,
     last_opened: Option<String>,
     is_running: bool,
+    session_started_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -71,6 +82,65 @@ struct UpdateProgress {
     finished: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DiscordPresenceSettings {
+    enabled: bool,
+    client_id: String,
+    show_current_app: bool,
+    show_session_time: bool,
+    show_total_time: bool,
+    show_app_icon: bool,
+}
+
+impl Default for DiscordPresenceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            client_id: option_env!("WORKDECK_DISCORD_CLIENT_ID")
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            show_current_app: true,
+            show_session_time: true,
+            show_total_time: true,
+            show_app_icon: true,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DiscordActivityData {
+    app_id: String,
+    app_name: String,
+    total_seconds: i64,
+    session_started_at: i64,
+}
+
+enum DiscordPresenceCommand {
+    Update(DiscordPresenceSettings, Option<DiscordActivityData>),
+}
+
+#[derive(Default)]
+struct DiscordConnectionState {
+    connected: bool,
+    last_error: Option<String>,
+}
+
+#[derive(Clone)]
+struct DiscordPresenceBridge {
+    sender: mpsc::Sender<DiscordPresenceCommand>,
+    state: Arc<Mutex<DiscordConnectionState>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscordPresenceView {
+    settings: DiscordPresenceSettings,
+    connected: bool,
+    last_error: Option<String>,
+}
+
 fn initialize_database(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -99,16 +169,50 @@ fn initialize_database(connection: &Connection) -> rusqlite::Result<()> {
            date TEXT PRIMARY KEY,
            seconds INTEGER NOT NULL DEFAULT 0
          );
+         CREATE TABLE IF NOT EXISTS app_settings (
+           key TEXT PRIMARY KEY,
+           value TEXT NOT NULL
+         );
          INSERT OR IGNORE INTO focused_daily (date, seconds)
-           SELECT date, MAX(seconds) FROM daily_activity GROUP BY date;"
+           SELECT date, MAX(seconds) FROM daily_activity GROUP BY date;",
     )?;
 
     let builtins = [
-        ("after-effects", "After Effects", "Motion design", "#9999ff", r#"["AfterFX.exe","AfterFX","After Effects","Adobe After Effects*"]"#),
-        ("premiere-pro", "Premiere Pro", "Video editing", "#9999ff", r#"["Adobe Premiere Pro.exe","Adobe Premiere Pro","Adobe Premiere Pro*"]"#),
-        ("blender", "Blender", "3D creation", "#f5792a", r#"["blender.exe","blender","Blender"]"#),
-        ("photoshop", "Photoshop", "Image editing", "#31a8ff", r#"["Photoshop.exe","Photoshop","Adobe Photoshop*"]"#),
-        ("figma", "Figma", "Interface design", "#a259ff", r#"["Figma.exe","Figma"]"#),
+        (
+            "after-effects",
+            "After Effects",
+            "Motion design",
+            "#9999ff",
+            r#"["AfterFX.exe","AfterFX","After Effects","Adobe After Effects*"]"#,
+        ),
+        (
+            "premiere-pro",
+            "Premiere Pro",
+            "Video editing",
+            "#9999ff",
+            r#"["Adobe Premiere Pro.exe","Adobe Premiere Pro","Adobe Premiere Pro*"]"#,
+        ),
+        (
+            "blender",
+            "Blender",
+            "3D creation",
+            "#f5792a",
+            r#"["blender.exe","blender","Blender"]"#,
+        ),
+        (
+            "photoshop",
+            "Photoshop",
+            "Image editing",
+            "#31a8ff",
+            r#"["Photoshop.exe","Photoshop","Adobe Photoshop*"]"#,
+        ),
+        (
+            "figma",
+            "Figma",
+            "Interface design",
+            "#a259ff",
+            r#"["Figma.exe","Figma"]"#,
+        ),
     ];
 
     for (id, name, category, color, process_names) in builtins {
@@ -120,7 +224,14 @@ fn initialize_database(connection: &Connection) -> rusqlite::Result<()> {
                category=excluded.category,
                color=excluded.color,
                process_names=excluded.process_names",
-            params![id, name, category, color, process_names, Local::now().to_rfc3339()],
+            params![
+                id,
+                name,
+                category,
+                color,
+                process_names,
+                Local::now().to_rfc3339()
+            ],
         )?;
         connection.execute(
             "INSERT OR IGNORE INTO app_totals (app_id, total_seconds) VALUES (?1, 0)",
@@ -128,6 +239,155 @@ fn initialize_database(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn load_discord_settings(connection: &Connection) -> DiscordPresenceSettings {
+    connection
+        .query_row(
+            "SELECT value FROM app_settings WHERE key='discord-rich-presence'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
+}
+
+fn discord_asset_key(app_id: &str) -> Option<&'static str> {
+    match app_id {
+        "premiere-pro" => Some("premiere-pro"),
+        "after-effects" => Some("after-effects"),
+        "blender" => Some("blender"),
+        "photoshop" => Some("photoshop"),
+        "figma" => Some("figma"),
+        _ => None,
+    }
+}
+
+fn format_discord_total(seconds: i64) -> String {
+    let hours = seconds.max(0) / 3600;
+    let minutes = (seconds.max(0) % 3600) / 60;
+    if hours > 0 && minutes > 0 {
+        format!("{hours}h {minutes}min registradas")
+    } else if hours > 0 {
+        format!("{hours}h registradas")
+    } else {
+        format!("{minutes}min registradas")
+    }
+}
+
+fn set_discord_connection_state(
+    state: &Arc<Mutex<DiscordConnectionState>>,
+    connected: bool,
+    last_error: Option<String>,
+) {
+    if let Ok(mut current) = state.lock() {
+        current.connected = connected;
+        current.last_error = last_error;
+    }
+}
+
+fn spawn_discord_presence_worker() -> DiscordPresenceBridge {
+    let (sender, receiver) = mpsc::channel::<DiscordPresenceCommand>();
+    let state = Arc::new(Mutex::new(DiscordConnectionState::default()));
+    let worker_state = state.clone();
+    thread::spawn(move || {
+        let mut client: Option<DiscordIpcClient> = None;
+        let mut connected_client_id = String::new();
+        while let Ok(DiscordPresenceCommand::Update(settings, active_app)) = receiver.recv() {
+            let configured = settings
+                .client_id
+                .chars()
+                .all(|character| character.is_ascii_digit())
+                && (17..=24).contains(&settings.client_id.len());
+            if !settings.enabled || !configured || active_app.is_none() {
+                if let Some(mut current) = client.take() {
+                    let _ = current.clear_activity();
+                    let _ = current.close();
+                }
+                connected_client_id.clear();
+                let error = if settings.enabled && !configured {
+                    Some("Configure o ID do aplicativo Workdeck no Discord.".to_string())
+                } else {
+                    None
+                };
+                set_discord_connection_state(&worker_state, false, error);
+                continue;
+            }
+
+            if connected_client_id != settings.client_id {
+                if let Some(mut current) = client.take() {
+                    let _ = current.clear_activity();
+                    let _ = current.close();
+                }
+                connected_client_id.clear();
+            }
+
+            if client.is_none() {
+                let mut next = DiscordIpcClient::new(&settings.client_id);
+                if let Err(error) = next.connect() {
+                    set_discord_connection_state(
+                        &worker_state,
+                        false,
+                        Some(format!("Discord não encontrado: {error}")),
+                    );
+                    continue;
+                }
+                connected_client_id = settings.client_id.clone();
+                client = Some(next);
+            }
+
+            let active_app = active_app.expect("active app checked above");
+            let details = if settings.show_current_app {
+                active_app.app_name.clone()
+            } else {
+                "Sessão criativa em andamento".to_string()
+            };
+            let mut presence = activity::Activity::new()
+                .name("Workdeck")
+                .activity_type(activity::ActivityType::Playing)
+                .details(details);
+            if settings.show_total_time {
+                presence = presence.state(format_discord_total(active_app.total_seconds));
+            }
+            if settings.show_session_time {
+                // Discord's local RPC expects the Unix epoch in seconds here.
+                presence = presence
+                    .timestamps(activity::Timestamps::new().start(active_app.session_started_at));
+            }
+            let mut assets = activity::Assets::new()
+                .large_image("workdeck")
+                .large_text("Workdeck");
+            if settings.show_app_icon {
+                if let Some(asset) = discord_asset_key(&active_app.app_id) {
+                    let hover = if settings.show_current_app {
+                        active_app.app_name.as_str()
+                    } else {
+                        "Software criativo"
+                    };
+                    assets = assets.small_image(asset).small_text(hover);
+                }
+            }
+            presence = presence.assets(assets);
+
+            if let Some(current) = client.as_mut() {
+                match current.set_activity(presence) {
+                    Ok(()) => set_discord_connection_state(&worker_state, true, None),
+                    Err(error) => {
+                        let _ = current.close();
+                        client = None;
+                        connected_client_id.clear();
+                        set_discord_connection_state(
+                            &worker_state,
+                            false,
+                            Some(format!("O Discord recusou a presença: {error}")),
+                        );
+                    }
+                }
+            }
+        }
+    });
+    DiscordPresenceBridge { sender, state }
 }
 
 fn slugify(value: &str) -> String {
@@ -164,10 +424,12 @@ fn add_tracked_app(
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, color=excluded.color, process_names=excluded.process_names",
         params![id, name.trim(), color, process_json, Local::now().to_rfc3339()],
     ).map_err(|error| error.to_string())?;
-    connection.execute(
-        "INSERT OR IGNORE INTO app_totals (app_id, total_seconds) VALUES (?1, 0)",
-        params![id],
-    ).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO app_totals (app_id, total_seconds) VALUES (?1, 0)",
+            params![id],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -181,16 +443,35 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         .collect();
 
     let (elapsed_seconds, detected_sleep_gap) = {
-        let mut last_sync = tracker.last_sync.lock().map_err(|error| error.to_string())?;
+        let mut last_sync = tracker
+            .last_sync
+            .lock()
+            .map_err(|error| error.to_string())?;
         let raw_seconds = last_sync.elapsed().as_secs();
         *last_sync = Instant::now();
-        (if raw_seconds > 45 { 0 } else { raw_seconds as i64 }, raw_seconds > 45)
+        (
+            if raw_seconds > 45 {
+                0
+            } else {
+                raw_seconds as i64
+            },
+            raw_seconds > 45,
+        )
     };
     let is_away = {
-        let mut last_sleep_gap = tracker.last_sleep_gap.lock().map_err(|error| error.to_string())?;
-        if detected_sleep_gap { *last_sleep_gap = Some(Instant::now()); }
-        let away = last_sleep_gap.map(|instant| instant.elapsed() < StdDuration::from_secs(20)).unwrap_or(false);
-        if !away { *last_sleep_gap = None; }
+        let mut last_sleep_gap = tracker
+            .last_sleep_gap
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if detected_sleep_gap {
+            *last_sleep_gap = Some(Instant::now());
+        }
+        let away = last_sleep_gap
+            .map(|instant| instant.elapsed() < StdDuration::from_secs(20))
+            .unwrap_or(false);
+        if !away {
+            *last_sleep_gap = None;
+        }
         away
     };
 
@@ -206,7 +487,13 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
             .query_map([], |row| {
                 let raw: String = row.get(4)?;
                 let process_names = serde_json::from_str(&raw).unwrap_or_default();
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, process_names))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    process_names,
+                ))
             })
             .map_err(|error| error.to_string())?
             .filter_map(Result::ok)
@@ -220,7 +507,9 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
             process_names.iter().any(|candidate| {
                 let candidate = candidate.trim().to_lowercase();
                 if let Some(prefix) = candidate.strip_suffix('*') {
-                    running_processes.iter().any(|process| process.starts_with(prefix))
+                    running_processes
+                        .iter()
+                        .any(|process| process.starts_with(prefix))
                 } else {
                     running_processes.contains(&candidate)
                 }
@@ -229,21 +518,44 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         .map(|(id, _, _, _, _)| id.clone())
         .collect();
 
+    let running_since = {
+        let mut starts = tracker
+            .running_since
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if is_away {
+            starts.clear();
+        } else {
+            starts.retain(|id, _| running_ids.contains(id));
+            let started_now = chrono::Utc::now().timestamp();
+            for id in &running_ids {
+                starts.entry(id.clone()).or_insert(started_now);
+            }
+        }
+        starts.clone()
+    };
+
     if !is_away && elapsed_seconds > 0 && !running_ids.is_empty() {
-        let transaction = connection.transaction().map_err(|error| error.to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
         // Per-app totals keep every running app. Focused time stores the union
         // of those intervals, so simultaneous apps add this slice only once.
-        transaction.execute(
-            "INSERT INTO focused_daily (date, seconds) VALUES (?1, ?2)
+        transaction
+            .execute(
+                "INSERT INTO focused_daily (date, seconds) VALUES (?1, ?2)
              ON CONFLICT(date) DO UPDATE SET seconds = seconds + excluded.seconds",
-            params![today, elapsed_seconds],
-        ).map_err(|error| error.to_string())?;
+                params![today, elapsed_seconds],
+            )
+            .map_err(|error| error.to_string())?;
         for id in &running_ids {
-            transaction.execute(
-                "INSERT INTO daily_activity (date, app_id, seconds) VALUES (?1, ?2, ?3)
+            transaction
+                .execute(
+                    "INSERT INTO daily_activity (date, app_id, seconds) VALUES (?1, ?2, ?3)
                  ON CONFLICT(date, app_id) DO UPDATE SET seconds = seconds + excluded.seconds",
-                params![today, id, elapsed_seconds],
-            ).map_err(|error| error.to_string())?;
+                    params![today, id, elapsed_seconds],
+                )
+                .map_err(|error| error.to_string())?;
             transaction.execute(
                 "INSERT INTO app_totals (app_id, total_seconds, last_opened) VALUES (?1, ?2, ?3)
                  ON CONFLICT(app_id) DO UPDATE SET total_seconds = total_seconds + excluded.total_seconds, last_opened = excluded.last_opened",
@@ -271,6 +583,11 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
             .unwrap_or(0);
         apps.push(TrackedApp {
             is_running: !is_away && running_ids.contains(&id),
+            session_started_at: if is_away {
+                None
+            } else {
+                running_since.get(&id).copied()
+            },
             id,
             name,
             category,
@@ -285,7 +602,9 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
     let start_date = Local::now().date_naive() - Duration::days(363);
     let mut heatmap = Vec::with_capacity(364);
     for offset in 0..364 {
-        let date = (start_date + Duration::days(offset)).format("%Y-%m-%d").to_string();
+        let date = (start_date + Duration::days(offset))
+            .format("%Y-%m-%d")
+            .to_string();
         let seconds = connection
             .query_row(
                 "SELECT seconds FROM focused_daily WHERE date = ?1",
@@ -317,7 +636,33 @@ fn collect_activity(tracker: &Tracker) -> Result<ActivitySnapshot, String> {
         rows
     };
 
-    Ok(ActivitySnapshot { apps, heatmap, app_daily, tracked_at: now, is_away })
+    let snapshot = ActivitySnapshot {
+        apps,
+        heatmap,
+        app_daily,
+        tracked_at: now,
+        is_away,
+    };
+    let active_app = snapshot
+        .apps
+        .iter()
+        .filter(|app| app.is_running)
+        .max_by_key(|app| app.session_started_at.unwrap_or_default())
+        .map(|app| DiscordActivityData {
+            app_id: app.id.clone(),
+            app_name: app.name.clone(),
+            total_seconds: app.total_seconds,
+            session_started_at: app
+                .session_started_at
+                .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        });
+    if let Ok(settings) = tracker.discord_settings.lock() {
+        let _ = tracker
+            .discord
+            .sender
+            .send(DiscordPresenceCommand::Update(settings.clone(), active_app));
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -325,11 +670,82 @@ fn sync_activity(tracker: State<'_, Tracker>) -> Result<ActivitySnapshot, String
     collect_activity(&tracker)
 }
 
+fn discord_presence_view(tracker: &Tracker) -> Result<DiscordPresenceView, String> {
+    let settings = tracker
+        .discord_settings
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    let state = tracker
+        .discord
+        .state
+        .lock()
+        .map_err(|error| error.to_string())?;
+    Ok(DiscordPresenceView {
+        settings,
+        connected: state.connected,
+        last_error: state.last_error.clone(),
+    })
+}
+
+#[tauri::command]
+fn get_discord_presence_settings(
+    tracker: State<'_, Tracker>,
+) -> Result<DiscordPresenceView, String> {
+    discord_presence_view(&tracker)
+}
+
+#[tauri::command]
+fn set_discord_presence_settings(
+    settings: DiscordPresenceSettings,
+    tracker: State<'_, Tracker>,
+) -> Result<DiscordPresenceView, String> {
+    if !settings.client_id.is_empty()
+        && (!settings
+            .client_id
+            .chars()
+            .all(|character| character.is_ascii_digit())
+            || !(17..=24).contains(&settings.client_id.len()))
+    {
+        return Err("O ID do aplicativo Discord deve conter apenas 17 a 24 números.".into());
+    }
+    let serialized = serde_json::to_string(&settings).map_err(|error| error.to_string())?;
+    {
+        let connection = tracker.database.lock().map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO app_settings (key,value) VALUES ('discord-rich-presence',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![serialized],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    *tracker
+        .discord_settings
+        .lock()
+        .map_err(|error| error.to_string())? = settings;
+    let _ = collect_activity(&tracker)?;
+    // The Discord worker connects asynchronously; the UI refreshes this status.
+    discord_presence_view(&tracker)
+}
+
+#[tauri::command]
+fn refresh_discord_presence(tracker: State<'_, Tracker>) -> Result<DiscordPresenceView, String> {
+    let _ = collect_activity(&tracker)?;
+    thread::sleep(StdDuration::from_millis(80));
+    discord_presence_view(&tracker)
+}
+
 fn encode_query(value: &str) -> String {
-    value.bytes().map(|byte| match byte {
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (byte as char).to_string(),
-        _ => format!("%{byte:02X}"),
-    }).collect()
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -352,7 +768,10 @@ fn update_endpoint(api_url: &str) -> Result<tauri::Url, String> {
     .map_err(|_| "O endereço do servidor de atualizações é inválido".to_string())
 }
 
-async fn find_update(app: &AppHandle, api_url: &str) -> Result<Option<tauri_plugin_updater::Update>, String> {
+async fn find_update(
+    app: &AppHandle,
+    api_url: &str,
+) -> Result<Option<tauri_plugin_updater::Update>, String> {
     let endpoint = update_endpoint(api_url)?;
     app.updater_builder()
         .endpoints(vec![endpoint])
@@ -365,13 +784,18 @@ async fn find_update(app: &AppHandle, api_url: &str) -> Result<Option<tauri_plug
 }
 
 #[tauri::command]
-async fn check_for_update(app: AppHandle, api_url: String) -> Result<Option<AvailableUpdate>, String> {
-    Ok(find_update(&app, &api_url).await?.map(|update| AvailableUpdate {
-        version: update.version.clone(),
-        current_version: update.current_version.clone(),
-        notes: update.body.clone(),
-        published_at: update.date.map(|date| date.to_string()),
-    }))
+async fn check_for_update(
+    app: AppHandle,
+    api_url: String,
+) -> Result<Option<AvailableUpdate>, String> {
+    Ok(find_update(&app, &api_url)
+        .await?
+        .map(|update| AvailableUpdate {
+            version: update.version.clone(),
+            current_version: update.current_version.clone(),
+            notes: update.body.clone(),
+            published_at: update.date.map(|date| date.to_string()),
+        }))
 }
 
 #[tauri::command]
@@ -391,13 +815,23 @@ async fn install_update(app: AppHandle, api_url: String) -> Result<(), String> {
                     .map(|total| ((downloaded.saturating_mul(100) / total).min(100)) as u8);
                 let _ = progress_app.emit(
                     "update-progress",
-                    UpdateProgress { downloaded, total: content_length, percent, finished: false },
+                    UpdateProgress {
+                        downloaded,
+                        total: content_length,
+                        percent,
+                        finished: false,
+                    },
                 );
             },
             move || {
                 let _ = finished_app.emit(
                     "update-progress",
-                    UpdateProgress { downloaded: 0, total: None, percent: Some(100), finished: true },
+                    UpdateProgress {
+                        downloaded: 0,
+                        total: None,
+                        percent: Some(100),
+                        finished: true,
+                    },
                 );
             },
         )
@@ -411,8 +845,17 @@ async fn install_update(app: AppHandle, api_url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn show_friend_notification(app: AppHandle, friend_id: String, display_name: String, software_name: String) -> Result<(), String> {
-    let active_notices = app.webview_windows().keys().filter(|label| label.starts_with("friend-activity-")).count() as i32;
+async fn show_friend_notification(
+    app: AppHandle,
+    friend_id: String,
+    display_name: String,
+    software_name: String,
+) -> Result<(), String> {
+    let active_notices = app
+        .webview_windows()
+        .keys()
+        .filter(|label| label.starts_with("friend-activity-"))
+        .count() as i32;
     let label = format!("friend-activity-{}", chrono::Utc::now().timestamp_millis());
     let url = format!(
         "index.html?friendActivity=1&friendId={}&displayName={}&softwareName={}",
@@ -420,7 +863,8 @@ async fn show_friend_notification(app: AppHandle, friend_id: String, display_nam
         encode_query(&display_name),
         encode_query(&software_name)
     );
-    let monitor = app.get_webview_window("main")
+    let monitor = app
+        .get_webview_window("main")
         .and_then(|window| window.current_monitor().ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
     let notice_builder = WebviewWindowBuilder::new(&app, label, WebviewUrl::App(url.into()))
@@ -438,9 +882,7 @@ async fn show_friend_notification(app: AppHandle, friend_id: String, display_nam
     // and use the notification page's opaque background on macOS.
     #[cfg(not(target_os = "macos"))]
     let notice_builder = notice_builder.transparent(true);
-    let notice = notice_builder
-        .build()
-        .map_err(|error| error.to_string())?;
+    let notice = notice_builder.build().map_err(|error| error.to_string())?;
     if let Some(monitor) = monitor {
         let scale = monitor.scale_factor();
         let width = (340.0 * scale).round() as i32;
@@ -449,7 +891,10 @@ async fn show_friend_notification(app: AppHandle, friend_id: String, display_nam
         let edge = (18.0 * scale).round() as i32;
         let work_area = monitor.work_area();
         let x = work_area.position.x + work_area.size.width as i32 - width - edge;
-        let y = work_area.position.y + work_area.size.height as i32 - height - edge - active_notices * (height + gap);
+        let y = work_area.position.y + work_area.size.height as i32
+            - height
+            - edge
+            - active_notices * (height + gap);
         let _ = notice.set_position(PhysicalPosition::new(x, y));
     }
     Ok(())
@@ -457,7 +902,11 @@ async fn show_friend_notification(app: AppHandle, friend_id: String, display_nam
 
 #[tauri::command]
 fn open_stream_popout(app: AppHandle, session_id: String, title: String) -> Result<(), String> {
-    if session_id.is_empty() || !session_id.chars().all(|character| character.is_ascii_alphanumeric() || character == '-') {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
         return Err("Sessão de transmissão inválida".into());
     }
     let label = format!("stream-popout-{session_id}");
@@ -489,18 +938,44 @@ fn open_friend_chat(app: AppHandle, friend_id: String) -> Result<(), String> {
     show_main_window(&app);
     if !friend_id.is_empty() {
         if let Some(window) = app.get_webview_window("main") {
-            window.emit("open-friend-chat", friend_id).map_err(|error| error.to_string())?;
+            window
+                .emit("open-friend-chat", friend_id)
+                .map_err(|error| error.to_string())?;
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{discord_asset_key, format_discord_total};
+
+    #[test]
+    fn formats_total_time_for_discord() {
+        assert_eq!(format_discord_total(32 * 3600), "32h registradas");
+        assert_eq!(format_discord_total(3720), "1h 2min registradas");
+        assert_eq!(format_discord_total(42 * 60), "42min registradas");
+    }
+
+    #[test]
+    fn maps_only_supported_discord_assets() {
+        assert_eq!(discord_asset_key("premiere-pro"), Some("premiere-pro"));
+        assert_eq!(discord_asset_key("after-effects"), Some("after-effects"));
+        assert_eq!(discord_asset_key("custom-editor"), None);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app)
+        }))
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
@@ -511,10 +986,14 @@ pub fn run() {
             fs::create_dir_all(&data_dir)?;
             let connection = Connection::open(data_dir.join("workdeck.db"))?;
             initialize_database(&connection)?;
+            let discord_settings = load_discord_settings(&connection);
             app.manage(Tracker {
                 database: Mutex::new(connection),
                 last_sync: Mutex::new(Instant::now()),
                 last_sleep_gap: Mutex::new(None),
+                running_since: Mutex::new(HashMap::new()),
+                discord_settings: Mutex::new(discord_settings),
+                discord: spawn_discord_presence_worker(),
             });
 
             let tracker_app = app.handle().clone();
@@ -525,7 +1004,8 @@ pub fn run() {
             });
 
             let open_item = MenuItem::with_id(app, "open", "Abrir Workdeck", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Sair completamente", true, None::<&str>)?;
+            let quit_item =
+                MenuItem::with_id(app, "quit", "Sair completamente", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
             let mut tray_builder = TrayIconBuilder::with_id("workdeck-tray")
                 .tooltip("Workdeck — rastreamento ativo")
@@ -537,7 +1017,12 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         show_main_window(tray.app_handle());
                     }
                 });
@@ -558,7 +1043,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() != "main" { return; }
+            if window.label() != "main" {
+                return;
+            }
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
@@ -568,7 +1055,18 @@ pub fn run() {
                 _ => {}
             }
         })
-        .invoke_handler(tauri::generate_handler![sync_activity, add_tracked_app, show_friend_notification, open_friend_chat, open_stream_popout, check_for_update, install_update])
+        .invoke_handler(tauri::generate_handler![
+            sync_activity,
+            add_tracked_app,
+            get_discord_presence_settings,
+            set_discord_presence_settings,
+            refresh_discord_presence,
+            show_friend_notification,
+            open_friend_chat,
+            open_stream_popout,
+            check_for_update,
+            install_update
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Workdeck")
         .run(|app, event| {

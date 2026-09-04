@@ -16,6 +16,7 @@ import {
   FileUp,
   Flame,
   FolderOpen,
+  Gamepad2,
   Home,
   Headphones,
   Library,
@@ -48,6 +49,7 @@ import { SoftwareIcon } from "./components/SoftwareIcon";
 import { StreamPopoutWindow, StudiosView } from "./components/StudiosView";
 import { mockApps, mockHeatmap } from "./data/mockData";
 import { addTrackedApp, getActivitySnapshot } from "./lib/activity";
+import { defaultDiscordPresenceSettings, getDiscordPresence, refreshDiscordPresence, saveDiscordPresence, type DiscordPresenceSettings, type DiscordPresenceView } from "./lib/discord-presence";
 import { formatDuration, formatFileSize, percentChange } from "./lib/format";
 import { PeerFileTransport, previewKindForFile, runP2PSelfTest, type SignalPayload } from "./lib/p2p";
 import { notifySoftwareStarted } from "./lib/notifications";
@@ -832,7 +834,7 @@ function FriendProfileView({ data, onBack }: { data: ApiProfile; onBack: () => v
   );
 }
 
-function SettingsView({ user, testFriend, uiScale, onUiScale, onUserChanged, onLogout, onSwitchAccount, onExport }: { user: SocialUser; testFriend?: Friend; uiScale: number; onUiScale: (scale: number) => void; onUserChanged: (user: SocialUser) => void; onLogout: () => void; onSwitchAccount: () => void; onExport: () => void }) {
+function SettingsView({ user, apps, testFriend, uiScale, onUiScale, onUserChanged, onLogout, onSwitchAccount, onExport }: { user: SocialUser; apps: TrackedApp[]; testFriend?: Friend; uiScale: number; onUiScale: (scale: number) => void; onUserChanged: (user: SocialUser) => void; onLogout: () => void; onSwitchAccount: () => void; onExport: () => void }) {
   const [publicProfile, setPublicProfile] = useState(user.profileVisibility === "public");
   const [presenceVisibility, setPresenceVisibility] = useState(user.presenceVisibility);
   const [notifications, setNotifications] = useState(localStorage.getItem("workdeck.notifications") !== "false");
@@ -842,7 +844,19 @@ function SettingsView({ user, testFriend, uiScale, onUiScale, onUserChanged, onL
   const [p2pTest, setP2pTest] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [audioProcessing, setAudioProcessing] = useState<AudioProcessingSettings>(() => { try { return { ...defaultAudioProcessing, ...JSON.parse(localStorage.getItem("workdeck.audio-processing") ?? "{}") }; } catch { return defaultAudioProcessing; } });
   const [streamDefaults, setStreamDefaults] = useState<StreamSettings>(() => { try { return { ...defaultStreamSettings, ...JSON.parse(localStorage.getItem("workdeck.stream-settings") ?? "{}") }; } catch { return defaultStreamSettings; } });
+  const [discordPresence, setDiscordPresence] = useState<DiscordPresenceView>({ settings: defaultDiscordPresenceSettings, connected: false, lastError: null });
+  const [discordSaving, setDiscordSaving] = useState(false);
+  const [discordError, setDiscordError] = useState("");
+  const [presenceClock, setPresenceClock] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => { void social.blockedUsers().then(setBlockedUsers).catch(() => undefined); }, []);
+  useEffect(() => {
+    let active = true;
+    const load = () => void getDiscordPresence().then((view) => { if (active) setDiscordPresence(view); }).catch(() => undefined);
+    load();
+    const statusTimer = window.setInterval(load, 5_000);
+    const clockTimer = window.setInterval(() => setPresenceClock(Math.floor(Date.now() / 1000)), 1_000);
+    return () => { active = false; window.clearInterval(statusTimer); window.clearInterval(clockTimer); };
+  }, []);
   const updatePrivacy = async (key: "profileVisibility" | "presenceVisibility", enabled: boolean) => {
     const changed = await social.updateMe({ [key]: enabled ? (key === "profileVisibility" ? "public" : "friends") : "private" });
     onUserChanged(changed);
@@ -853,6 +867,17 @@ function SettingsView({ user, testFriend, uiScale, onUiScale, onUserChanged, onL
     localStorage.setItem("workdeck.audio-processing", JSON.stringify(next));
   };
   const updateStream = (next: StreamSettings) => { setStreamDefaults(next); localStorage.setItem("workdeck.stream-settings", JSON.stringify(next)); };
+  const updateDiscord = async (patch: Partial<DiscordPresenceSettings>) => {
+    const next = { ...discordPresence.settings, ...patch };
+    setDiscordPresence((current) => ({ ...current, settings: next }));
+    setDiscordSaving(true);
+    setDiscordError("");
+    try { setDiscordPresence(await saveDiscordPresence(next)); }
+    catch (reason) { setDiscordError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setDiscordSaving(false); }
+  };
+  const previewApp = apps.find((app) => app.status === "running") ?? apps[0];
+  const previewSessionSeconds = Math.max(0, presenceClock - (previewApp?.sessionStartedAt ?? presenceClock - 3_742));
   return (
     <div className="page settings-page">
       <div className="page-heading"><div><span className="eyebrow">Your preferences</span><h1>Settings</h1><p>Control tracking, privacy, and notifications.</p></div></div>
@@ -866,6 +891,29 @@ function SettingsView({ user, testFriend, uiScale, onUiScale, onUserChanged, onL
         <div className="setting-row"><div><strong>Live software presence</strong><p>Choose who can see which tracked software is currently open.</p></div><select value={presenceVisibility} onChange={async (event) => { const value = event.target.value as SocialUser["presenceVisibility"]; setPresenceVisibility(value); onUserChanged(await social.updateMe({ presenceVisibility: value })); }}><option value="public">Everyone with my link</option><option value="friends">Friends only</option><option value="private">Nobody</option></select></div>
         <SettingRow title="Friend activity notifications" description="Show a Steam-style card in the corner when a friend opens software." value={notifications} onChange={(value) => { setNotifications(value); localStorage.setItem("workdeck.notifications", String(value)); }} />
         <button className="secondary-button notification-test" onClick={() => void notifySoftwareStarted(testFriend?.id ?? "", testFriend?.name ?? user.displayName, "Premiere Pro")}><BellRing size={16} /> Testar aviso estilo Steam</button>
+      </section>
+      <section className="panel settings-panel discord-settings-panel">
+        <SectionTitle title="Discord Rich Presence" action={<span className={`discord-connection ${discordPresence.connected ? "connected" : ""}`}><i />{discordPresence.connected ? "Conectado" : "Desconectado"}</span>} />
+        <div className="discord-settings-layout">
+          <div className="discord-controls">
+            <SettingRow title="Exibir no Discord" description="Mostra Jogando Workdeck enquanto um software acompanhado estiver aberto." value={discordPresence.settings.enabled} onChange={(value) => void updateDiscord({ enabled: value })} />
+            <SettingRow title="Nome do software" description="Permite que outras pessoas vejam se você está no Premiere, After Effects, Blender e outros." value={discordPresence.settings.showCurrentApp} onChange={(value) => void updateDiscord({ showCurrentApp: value })} />
+            <SettingRow title="Tempo da sessão" description="Mostra há quanto tempo o software atual está aberto." value={discordPresence.settings.showSessionTime} onChange={(value) => void updateDiscord({ showSessionTime: value })} />
+            <SettingRow title="Tempo total registrado" description="Mostra suas horas acumuladas no software atual." value={discordPresence.settings.showTotalTime} onChange={(value) => void updateDiscord({ showTotalTime: value })} />
+            <SettingRow title="Ícone do software" description="Exibe o ícone pequeno do aplicativo sobre o logo do Workdeck." value={discordPresence.settings.showAppIcon} onChange={(value) => void updateDiscord({ showAppIcon: value })} />
+          </div>
+          <div className="discord-preview">
+            <span className="discord-preview-label">COMO APARECE NO DISCORD</span>
+            <article>
+              <div className="discord-art"><AppLogo size={68} />{discordPresence.settings.showAppIcon && previewApp && <span><SoftwareIcon app={previewApp} size="sm" /></span>}</div>
+              <div className="discord-preview-copy"><strong>Jogando Workdeck</strong>{discordPresence.settings.showCurrentApp && <b>{previewApp?.name ?? "Premiere Pro"}</b>}{!discordPresence.settings.showCurrentApp && <b>Sessão criativa em andamento</b>}{discordPresence.settings.showSessionTime && <span>{formatDuration(previewSessionSeconds, true)} decorridos</span>}{discordPresence.settings.showTotalTime && <span>{formatDuration(previewApp?.totalSeconds ?? 115_200, true)} registradas</span>}</div>
+            </article>
+          </div>
+        </div>
+        {!discordPresence.settings.clientId && <label className="settings-server discord-client-id"><span>Configuração do aplicativo Discord<small>Cole o Application ID público do Workdeck. Nas builds oficiais ele já vem configurado.</small></span><input inputMode="numeric" value={discordPresence.settings.clientId} onChange={(event) => setDiscordPresence((current) => ({ ...current, settings: { ...current.settings, clientId: event.target.value.replace(/\D/g, "") } }))} placeholder="Ex.: 123456789012345678" /><button className="secondary-button" disabled={discordSaving} onClick={() => void updateDiscord({ clientId: discordPresence.settings.clientId })}>{discordSaving ? "Salvando…" : "Salvar"}</button></label>}
+        <button className="secondary-button discord-test-button" disabled={discordSaving || !discordPresence.settings.enabled} onClick={async () => { setDiscordSaving(true); setDiscordError(""); try { setDiscordPresence(await refreshDiscordPresence()); } catch (reason) { setDiscordError(reason instanceof Error ? reason.message : String(reason)); } finally { setDiscordSaving(false); } }}><Gamepad2 size={16} /> Testar agora no Discord</button>
+        {(discordError || discordPresence.lastError) && <span className="settings-error">{discordError || discordPresence.lastError}</span>}
+        {!discordError && !discordPresence.lastError && discordPresence.settings.enabled && !apps.some((app) => app.status === "running") && <span className="settings-success">Abra um software acompanhado para a atividade aparecer no Discord.</span>}
       </section>
       <section className="panel settings-panel">
         <SectionTitle title="Voz & transmissão" />
@@ -1213,7 +1261,7 @@ function WorkdeckApp() {
           {view === "chat" && <ChatView friends={chatFriends} currentUserId={currentUser.id} initialFriendId={selectedFriendId} initialAttachment={pendingChatAttachment} onInitialAttachmentConsumed={() => setPendingChatAttachment(null)} onFriendsChanged={refreshSocial} onConversationRead={markConversationLocallyRead} onOpenProfile={(friend) => void openFriendProfile(friend)} />}
           {view === "friend-profile" && viewedProfile && <FriendProfileView data={viewedProfile} onBack={() => setCurrentView("chat")} />}
           {view === "profile" && <ProfileView apps={apps} heatmap={heatmap} user={currentUser} friendCount={friends.length} onCopy={copyProfile} onUserChanged={setCurrentUser} />}
-          {view === "settings" && <SettingsView user={currentUser} testFriend={friends[0]} uiScale={uiScale} onUiScale={setUiScale} onUserChanged={setCurrentUser} onLogout={() => void logout()} onSwitchAccount={switchAccount} onExport={exportActivity} />}
+          {view === "settings" && <SettingsView user={currentUser} apps={apps} testFriend={friends[0]} uiScale={uiScale} onUiScale={setUiScale} onUserChanged={setCurrentUser} onLogout={() => void logout()} onSwitchAccount={switchAccount} onExport={exportActivity} />}
         </main>
       </div>
 
